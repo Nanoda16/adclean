@@ -1,0 +1,7 @@
+# 仓库内统一用 LF；.bat 必须是 CRLF，否则老版本 cmd 可能出错
+* text=auto
+*.bat text eol=crlf
+*.pkl binary
+*.png binary
+*.jpg binary
+*.zip binary

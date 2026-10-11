@@ -1,0 +1,63 @@
+# ---------------- 构建产物（走 GitHub Releases，不进仓库）----------------
+# dist/ 里有 ~300MB（含 101MB 语言模型缓存），且每次打包都变；
+# 提交它既会撑爆仓库，也会撞上 GitHub 的单文件 100MB 硬上限。
+build/
+dist/
+*.spec
+!adclean.spec
+
+# ---------------- Python ----------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ---------------- 语言模型缓存（100MB 级，必须排除）----------------
+# 这些 .adclean-lm*.json 每个约 101MB，超过 GitHub 单文件硬上限，
+# push 会被直接拒绝。运行所需的模型请放到 Release 附件里分发。
+.adclean-lm*.json
+*.old-t2s
+
+# 早期遗留的模型缓存
+.adclean-model.json
+
+# ---------------- 运行/输出产物 ----------------
+cleaned/
+cleaned_audit/
+*.auto.txt
+*_report.json
+report.json
+*.audit.json
+*.review_queue.json
+*.changelog.json
+*.events.json
+
+# ---------------- 测试/工具缓存 ----------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 临时/备份文件
+*.bak
+*.tmp
+*~
+
+# ---------------- 编辑器 / 系统 ----------------
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+*.log
+
+# ---------------- 绝对不能提交的东西 ----------------
+# API Key 实际存放在 %USERPROFILE%\.adclean\llm.json（不在本目录），
+# 这里再加一道防线，防止有人手工往这里拷贝。
+llm.json
+.env
+*.key
+secrets.*

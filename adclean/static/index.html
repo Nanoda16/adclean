@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<script>window.__adcleanErrors=[];window.addEventListener("error",function(e){window.__adcleanErrors.push((e.message||"?")+" @"+(e.filename||"")+":"+(e.lineno||0)+":"+(e.colno||0));});window.addEventListener("unhandledrejection",function(e){window.__adcleanErrors.push("promise: "+((e.reason&&e.reason.message)||e.reason));});</script>
+
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>adclean · 小说 TXT 广告校正</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --fg:#e6e9ef; --dim:#98a2b3; --acc:#5b9dff; --ok:#3ecf8e; --warn:#ffb020; --err:#ff6b6b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:14px/1.6 "Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+  header{padding:16px 26px;border-bottom:1px solid var(--line);display:flex;
+         align-items:baseline;gap:14px;background:var(--panel);flex-wrap:wrap}
+  header h1{margin:0;font-size:17px;font-weight:600;letter-spacing:.3px}
+  header span{color:var(--dim);font-size:12.5px}
+  header .badge{margin-left:auto;font-size:12px;color:var(--dim)}
+  nav{display:flex;gap:2px;padding:0 26px;background:var(--panel);
+      border-bottom:1px solid var(--line)}
+  nav button{background:transparent;color:var(--dim);border:0;border-bottom:2px solid transparent;
+      padding:10px 16px;font-weight:600;font-size:13px;cursor:pointer;border-radius:0}
+  nav button.on{color:var(--fg);border-bottom-color:var(--acc)}
+  main{max-width:1120px;margin:0 auto;padding:20px 26px 90px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+        padding:16px 18px;margin-bottom:16px}
+  .card h2{margin:0 0 12px;font-size:14px;font-weight:600;color:var(--fg);
+        display:flex;align-items:center;gap:8px}
+  .card h2 .tag{font-size:11px;font-weight:500;color:var(--dim);border:1px solid var(--line);
+        border-radius:99px;padding:1px 8px}
+  .drop{border:1.5px dashed #39404e;border-radius:12px;padding:22px;text-align:center;
+        color:var(--dim);transition:.15s;cursor:pointer;background:var(--panel2)}
+  .drop.hot{border-color:var(--acc);background:#1b2431;color:var(--fg)}
+  .drop b{color:var(--acc)}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px}
+  input[type=text],input[type=password],input[type=number],select{
+        flex:1;min-width:180px;background:#0d1016;border:1px solid var(--line);
+        color:var(--fg);border-radius:8px;padding:9px 11px;font-family:inherit;font-size:13px}
+  input.sm{flex:none;width:78px;min-width:0}
+  button{background:var(--acc);color:#07101f;border:0;border-radius:8px;padding:9px 16px;
+         font-weight:600;cursor:pointer;font-size:13px}
+  button.sec{background:#252b36;color:var(--fg)}
+  button.ghost{background:transparent;color:var(--dim);border:1px solid var(--line)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  del .invis{color:#d0a06a;font-size:12px;font-style:normal}
+label.chk{display:flex;gap:7px;align-items:center;color:var(--dim);font-size:13px;cursor:pointer}
+  label.fld{display:flex;flex-direction:column;gap:5px;flex:1;min-width:230px;
+        color:var(--dim);font-size:12px}
+  label.fld input,label.fld select{min-width:0;width:100%}
+  ul.files{list-style:none;margin:10px 0 0;padding:0;max-height:240px;overflow:auto}
+  ul.files li{display:flex;justify-content:space-between;gap:10px;padding:6px 9px;
+        border-bottom:1px solid #21252e;font-size:13px}
+  ul.files li:last-child{border-bottom:0}
+  .sz{color:var(--dim);font-variant-numeric:tabular-nums}
+  .bar{height:7px;background:#0d1016;border-radius:99px;overflow:hidden;margin-top:12px}
+  .bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#3d7dff,#3ecf8e);
+         transition:width .25s}
+  .stat{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:10px;margin-top:12px}
+  .stat div{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:9px 11px}
+  .stat b{display:block;font-size:19px;font-weight:600}
+  .stat span{color:var(--dim);font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:7px 9px;border-bottom:1px solid #21252e;vertical-align:top}
+  th{color:var(--dim);font-weight:500}
+  .scroll{max-height:420px;overflow:auto;border:1px solid var(--line);border-radius:9px;margin-top:8px}
+  .scroll table{margin:0}
+  .diff{margin-top:10px;background:#0d1016;border:1px solid var(--line);border-radius:9px;
+        padding:10px 12px;font-size:12.5px;line-height:1.75;word-break:break-all}
+  .diff .k{color:var(--dim)}
+  ins{background:#173a2a;color:#7be3ae;text-decoration:none;padding:0 1px;border-radius:3px}
+  del{background:#3a1b1b;color:#ff9d9d;text-decoration:none;padding:0 1px;border-radius:3px}
+  .muted{color:var(--dim)}
+  .msg{margin-top:8px;font-size:13px;color:var(--dim)}
+  .ok{color:var(--ok)} .err{color:var(--err)} .warn{color:var(--warn)}
+  details{margin-top:8px}
+  summary{cursor:pointer;color:var(--dim);font-size:13px}
+  code{background:#0d1016;padding:1px 5px;border-radius:4px;font-size:12px}
+  .pill{display:inline-block;border-radius:99px;padding:1px 8px;font-size:11.5px;
+        border:1px solid var(--line);color:var(--dim)}
+  .pill.HIGH{color:#ff9d9d;border-color:#5a2a2a;background:#2a1616}
+  .pill.MEDIUM{color:#ffd48a;border-color:#5a4a2a;background:#2a2316}
+  .pill.LOW{color:#9fb3c8;border-color:#2a3644;background:#161d24}
+  .tab{display:none} .tab.on{display:block}
+  .hint{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.7}
+  a{color:var(--acc)}
+</style>
+</head>
+<body>
+<header>
+  <h1>adclean</h1>
+  <span>小说 TXT 广告清理</span>
+  <span class="badge" id="engineBadge">语料：未加载</span>
+</header>
+
+<nav>
+  <button id="nav-new" class="on" onclick="switchTab('new')">① 自动清洗</button>
+  <button id="nav-llm" onclick="switchTab('llm')">② LLM 审查（高级）</button>
+</nav>
+
+<main>
+  <!-- ============ 共享：选文件 + 输出目录 ============ -->
+  <div class="card">
+    <h2>选择要清理的 txt</h2>
+    <div class="drop" id="drop">
+      把 txt 文件或整个文件夹拖到这里 &nbsp;·&nbsp; 或 <b>点击这里选择</b>
+      <div class="muted" style="font-size:12px;margin-top:6px" id="dropHint">
+        支持 .txt 单文件，也支持整个文件夹批量处理。原文件不会被改动。
+      </div>
+      <input type="file" id="pickFiles" accept=".txt" multiple hidden>
+      <input type="file" id="pickDir" webkitdirectory directory hidden>
+    </div>
+    <div class="row">
+      <button class="sec" id="btnPickFiles">选择 txt 文件</button>
+      <button class="sec" id="btnPickDir">选择文件夹</button>
+      <button class="sec" id="btnBrowseSrv" onclick="openBrowse()">浏览目录…</button>
+      <span class="muted" id="pickMsg">未选择文件</span>
+    </div>
+    <ul class="files" id="fileList"></ul>
+    <div class="row">
+      <label class="fld" style="max-width:520px">输出目录
+        <input type="text" id="outDir" placeholder="默认放在原文件旁边的 cleaned 文件夹">
+      </label>
+      <button class="sec" id="btnPickOut" style="align-self:flex-end">选择…</button>
+      <button class="sec" id="btnOpenOut" style="align-self:flex-end">打开</button>
+    </div>
+  </div>
+
+  <div class="card" id="browseCard" style="display:none">
+    <h2>浏览目录</h2>
+    <div class="row">
+      <input type="text" id="browsePath" placeholder="例如 F:\novels">
+      <button class="sec" onclick="browseTo(document.getElementById('browsePath').value)">前往</button>
+      <button class="sec" onclick="browseTo('')">盘符</button>
+    </div>
+    <div id="browseBody" class="muted" style="margin-top:10px"></div>
+  </div>
+
+  <!-- ============ ① 审计 + 自动修复 ============ -->
+  <section class="tab on" id="tab-new">
+    <div class="card">
+      <h2>自动清洗</h2>
+      <div class="hint">
+        会删掉的东西：<br>
+        · 整行广告（网页标签 / 网址 / 群号 / 上传者水印 / 章尾求票）<br>
+        · 句内插入的乱码、零宽字符、异常符号<br>
+        没有广告痕迹的书一个字都不动；原文件不会被覆盖。
+      </div>
+      <div class="row">
+        <label class="fld" style="max-width:520px">人名 / 专名白名单（逗号分隔，这些字永不作为可疑字）
+          <input type="text" id="names" value="常榕,艾玛,黑部奈叶香,樱羽艾玛">
+        </label>
+      </div>
+      <div class="row">
+        <label class="chk"><input type="checkbox" id="chkSimplified">
+          输出简体（繁→简转换）</label>
+        <span class="muted" style="font-size:12px">
+          默认关闭。开启会把繁体字换成简体字（属于改写）。
+        </span>
+      </div>
+      <div class="row">
+        <button id="btnClean">开始清洗</button>
+        <button class="ghost" id="btnCleanCancel" style="display:none">取消</button>
+        <button class="sec" onclick="switchTab('llm')">高级：LLM 审查 →</button>
+      </div>
+      <div class="bar"><i id="bar1"></i></div>
+      <div class="msg" id="msg1"></div>
+      <div class="stat" id="stat1"></div>
+    </div>
+    <div class="card" id="auditCard" style="display:none">
+      <h2>审计报告</h2>
+      <div id="auditBody"></div>
+    </div>
+  </section>
+
+  <!-- ============ ② LLM 审查 ============ -->
+  <section class="tab" id="tab-llm">
+    <div class="card">
+      <h2>LLM 连接 <span class="tag">OpenAI 兼容</span></h2>
+      <div class="hint">
+        任意 OpenAI 兼容服务：官方 / 中转站 / 本地 Ollama、vLLM、LM Studio。
+        地址填到 <code>/v1</code> 即可。API Key 只存本机，不回显、不写日志。
+      </div>
+      <div class="row">
+        <label class="fld">API 地址（base_url）
+          <input type="text" id="llmBase" placeholder="https://api.example.com/v1">
+        </label>
+        <label class="fld">API Key
+          <input type="password" id="llmKey" placeholder="sk-…（留空则沿用已保存的）">
+        </label>
+      </div>
+      <div class="row">
+        <label class="fld">模型
+          <select id="llmModel"><option value="">（先点「获取模型列表」）</option></select>
+        </label>
+        <label class="fld" style="max-width:220px">或手动填模型名
+          <input type="text" id="llmModelManual" placeholder="例如 gpt-4o-mini">
+        </label>
+      </div>
+      <div class="row">
+        <button class="sec" id="btnModels">获取模型列表</button>
+        <button class="sec" id="btnProbe">测试连接</button>
+        <label class="chk"><input type="checkbox" id="llmSaveKey" checked> 保存 API Key 到本地配置</label>
+        <span class="muted" id="llmMsg"></span>
+      </div>
+      <details>
+        <summary>调用参数（默认已按稳妥值设置）</summary>
+        <div class="row">
+          <label class="chk">超时(秒) <input type="number" class="sm" id="llmTimeout" value="60"></label>
+          <label class="chk">并发 <input type="number" class="sm" id="llmConc" value="2"></label>
+          <label class="chk">失败重试 <input type="number" class="sm" id="llmRetries" value="2"></label>
+          <label class="chk">单次上限(项，0=不限) <input type="number" class="sm" id="llmMax" value="0"></label>
+          <label class="chk">temperature <input type="number" class="sm" id="llmTemp" value="0" step="0.1"></label>
+          <label class="chk"><input type="checkbox" id="llmJson" checked> 请求 JSON 模式</label>
+        </div>
+        <div class="hint">
+          「单次上限」= 一次运行最多送审多少条；<b>0 = 不限</b>。
+          想控制花费就先设小一点（如 50），确认质量后再放开。
+        </div>
+      </details>
+      <div class="hint" id="llmCfgPath"></div>
+    </div>
+
+    <div class="card">
+      <h2>执行 LLM 审查 <span class="tag">写回 + 完整日志</span></h2>
+      <div class="hint">
+        把审查队列发给 LLM 复核，决策自动写回。默认只允许删除，不允许替换或插入。<br>
+        每条决策记入 changelog，另存一份未应用 LLM 的 <code>*.auto.txt</code> 供对比回滚。<br>
+        <b>没送完怎么办</b>：把下面「单次上限」改成 0（不限）再跑一次即可全部处理。
+      </div>
+      <div class="row">
+        <button id="btnReview">开始 LLM 审查并写回</button>
+        <button class="ghost" id="btnReviewCancel" style="display:none">取消</button>
+      </div>
+      <div class="bar"><i id="bar2"></i></div>
+      <div class="msg" id="msg2"></div>
+      <div class="stat" id="stat2"></div>
+    </div>
+    <div class="card" id="reviewCard" style="display:none">
+      <h2>审查结果</h2>
+      <div id="reviewBody"></div>
+    </div>
+  </section>
+
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+let selected = [];        // {path, name, size}
+let browseFiles = [];
+let curBrowse = "";
+let lastCleanJob = null;
+
+function fmt(b){ if(b<1024) return b+" B"; if(b<1048576) return (b/1024).toFixed(0)+" KB";
+                 return (b/1048576).toFixed(1)+" MB"; }
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+/* 把不可见字符显示成可读标签。 */
+const INVIS_LABEL = {
+  "\u200b":"[零宽空格]","\u200c":"[零宽不连]","\u200d":"[零宽连接]",
+  "\u200e":"[左到右标记]","\u200f":"[右到左标记]",
+  "\u202a":"[嵌入LRE]","\u202b":"[嵌入RLE]","\u202c":"[结束嵌入]",
+  "\u2060":"[词连接符]","\u2061":"[函数应用]","\u2062":"[隐形乘号]",
+  "\u2063":"[隐形分隔]","\u2064":"[隐形加号]",
+  "\ufeff":"[BOM]","\u00ad":"[软连字符]","\u180e":"[蒙元音分隔]",
+  "\u3000":"[全角空格]","\u00a0":"[不换行空格]"
+};
+function visibleText(s){
+  s = String(s == null ? "" : s);
+  let plain = "", html = "";
+  for (const ch of s) {
+    const cp = ch.codePointAt(0);
+    let label = INVIS_LABEL[ch];
+    if (!label && (cp === 9 || cp === 10 || cp === 13)) label = "[空白]";
+    if (!label && cp < 0x20) label = "[控制 U+" + cp.toString(16).toUpperCase().padStart(4,"0") + "]";
+    if (!label && cp >= 0x7f && cp <= 0x9f) label = "[控制 U+" + cp.toString(16).toUpperCase().padStart(4,"0") + "]";
+    if (label) { plain += label; html += '<span class="invis">' + label + '</span>'; }
+    else { plain += ch; html += escapeHtml(ch); }
+  }
+  return {html: html, plain: plain};
+}
+function baseName(p){ return String(p).split(/[\\/]/).pop(); }
+function statCards(items){
+  return items.map(([k,v]) => `<div><b>${v}</b><span>${k}</span></div>`).join("");
+}
+async function api(path, body){
+  const opt = body ? {method:"POST", headers:{"Content-Type":"application/json"},
+                      body: JSON.stringify(body)} : {};
+  const r = await fetch(path, opt);
+  const txt = await r.text();
+  try { return JSON.parse(txt); }
+  catch(e){ return {error:"返回不是 JSON：" + txt.slice(0,200)}; }
+}
+
+/* ---------------- 标签页 ---------------- */
+function switchTab(name){
+  ["new","llm"].forEach(n => {
+    $("#tab-"+n).classList.toggle("on", n===name);
+    $("#nav-"+n).classList.toggle("on", n===name);
+  });
+  if (name === "llm") llmLoad();
+}
+
+/* ---------------- 拖拽 / 选文件 ---------------- */
+const drop = $("#drop");
+drop.onclick = () => $("#pickFiles").click();
+["dragenter","dragover"].forEach(e => drop.addEventListener(e, ev => {
+  ev.preventDefault(); drop.classList.add("hot");
+}));
+["dragleave","drop"].forEach(e => drop.addEventListener(e, ev => {
+  ev.preventDefault(); drop.classList.remove("hot");
+}));
+drop.addEventListener("drop", async ev => {
+  const items = ev.dataTransfer.items;
+  if (items && items.length && items[0].webkitGetAsEntry) {
+    const entries = [];
+    for (const it of items) { const en = it.webkitGetAsEntry(); if (en) entries.push(en); }
+    const found = [];
+    for (const en of entries) await walkEntry(en, found);
+    if (found.length) { addFiles(found); return; }
+  }
+  addFiles([...ev.dataTransfer.files].filter(f => /\.txt$/i.test(f.name)));
+});
+async function walkEntry(entry, out){
+  if (entry.isFile) { if (/\.txt$/i.test(entry.name)) out.push(entry); return; }
+  const reader = entry.createReader();
+  const all = [];
+  await new Promise(res => {
+    const step = () => reader.readEntries(async batch => {
+      if (!batch.length) return res();
+      all.push(...batch); step();
+    });
+    step();
+  });
+  for (const e of all) await walkEntry(e, out);
+}
+$("#pickFiles").onchange = e => addFiles([...e.target.files]);
+$("#pickDir").onchange = e => addFiles([...e.target.files].filter(f => /\.txt$/i.test(f.name)));
+
+function addFiles(files){
+  selected = files.map(f => ({file:f, name:f.webkitRelativePath || f.name, size:f.size}));
+  renderFiles();
+}
+function addServerFiles(paths, sizes){
+  selected = paths.map(p => ({path:p, name:baseName(p), size:(sizes||{})[p]||0}));
+  renderFiles();
+}
+function renderFiles(){
+  const ul = $("#fileList"); ul.innerHTML = "";
+  let total = 0, unknown = false;
+  selected.forEach(s => {
+    const k = s.size || 0;
+    if (k) total += k; else unknown = true;
+    const li = document.createElement("li");
+    li.innerHTML = `<span>${escapeHtml(s.name)}</span>`
+      + `<span class="sz">${k ? fmt(k) : "—"}</span>`;
+    ul.appendChild(li);
+  });
+  $("#pickMsg").textContent = selected.length
+    ? (`已选 ${selected.length} 个文件`
+       + (total ? `，共 ${fmt(total)}` : (unknown ? "（大小未知）" : "")))
+    : "未选择文件";
+  if (selected.length && !$("#outDir").value.trim() && selected[0].path) {
+    const dir = selected[0].path.replace(/[\\/][^\\/]*$/, "");
+    $("#outDir").value = dir + "\\cleaned_audit";
+  }
+}
+
+/* ---------------- 浏览服务器目录 ---------------- */
+function openBrowse(){ $("#browseCard").style.display="block"; browseTo(""); }
+async function browseTo(path){
+  const url = path ? `/api/browse?path=${encodeURIComponent(path)}` : "/api/drives";
+  const j = await api(url);
+  const body = $("#browseBody");
+  if (j.error) { body.innerHTML = `<span class="err">${escapeHtml(j.error)}</span>`; return; }
+  if (j.drives) {
+    body.innerHTML = "盘符：" + j.drives.map(d =>
+      `<button class="sec" style="margin:3px" onclick="browseTo('${d.replace(/\\/g,'\\\\')}')">${d}</button>`).join("")
+      + `<div class="muted" style="margin-top:6px">当前目录：<code>${escapeHtml(j.cwd)}</code></div>`;
+    return;
+  }
+  curBrowse = j.path; browseFiles = j.files.map(f => f.name);
+  $("#browsePath").value = j.path;
+  let html = `<div class="muted">当前：<code>${escapeHtml(j.path)}</code></div>`;
+  html += `<div style="margin:8px 0">
+    <button class="sec" onclick="browseTo(${JSON.stringify(j.parent)})">↑ 上级</button>
+    <button class="sec" onclick="useBrowseDir()">使用整个目录</button></div>`;
+  if (j.dirs.length) {
+    html += `<div class="muted">子目录：</div><div style="margin:4px 0 8px">` +
+      j.dirs.map(d => `<button class="sec" style="margin:3px"
+        onclick="browseTo(${JSON.stringify(joinPath(j.path,d))})">${escapeHtml(d)}</button>`).join("") + `</div>`;
+  }
+  if (j.files.length) {
+    html += `<div class="muted">txt 文件：</div><div class="scroll"><table><tr><th>文件</th><th>大小</th></tr>` +
+      j.files.map(f => `<tr><td>${escapeHtml(f.name)}</td><td class="sz">${fmt(f.size)}</td></tr>`).join("") +
+      `</table></div><div style="margin-top:6px"><button class="sec" onclick="useBrowseFiles()">添加本目录全部 txt</button></div>`;
+  } else {
+    html += `<div class="muted">此目录没有 txt 文件</div>`;
+  }
+  body.innerHTML = html;
+}
+function joinPath(a,b){ return a.replace(/[\\/]+$/,"") + "\\" + b; }
+async function useBrowseDir(){
+  const j = await api(`/api/list?folder=${encodeURIComponent(curBrowse)}`);
+  if (j.error) return alert(j.error);
+  addServerFiles(j.files, j.sizes);
+  $("#outDir").value = curBrowse + "\\cleaned_audit";
+  $("#browseCard").style.display = "none";
+}
+function useBrowseFiles(){
+  const paths = browseFiles.map(n => joinPath(curBrowse, n));
+  api(`/api/list?folder=${encodeURIComponent(curBrowse)}`).then(j=>{
+    addServerFiles(paths, j.sizes || {});
+    $("#outDir").value = curBrowse + "\\cleaned_audit";
+    $("#browseCard").style.display = "none";
+  });
+}
+
+/* ---------------- 通用：任务轮询 ---------------- */
+async function pollJob(jobId, onUpdate, onDone, onError){
+  while (true) {
+    await new Promise(r => setTimeout(r, 500));
+    const j = await api(`/api/job?id=${jobId}`);
+    if (j.error) { onError(j.error); return; }
+    if (onUpdate) onUpdate(j);
+    if (j.state === "done") { onDone(j); return; }
+    if (j.state === "cancelled") { onDone(j); return; }
+    if (j.state === "error") { onError(j.trace || "失败", j); return; }
+  }
+}
+function requirePaths(){
+  if (!selected.length) { alert("请先选择 txt 文件。"); return false; }
+  if (!selected[0].path) {
+    alert("这个文件是通过浏览器上传的，拿不到本机完整路径。\n"
+        + "请改用上面的「选择 txt 文件 / 选择文件夹」按钮，"
+        + "或点「浏览目录…」在本机磁盘里选。");
+    openBrowse(); return false;
+  }
+  return true;
+}
+function requireOut(){
+  if (!$("#outDir").value.trim()) { alert("请填写输出目录。"); return false; }
+  return true;
+}
+
+/* ---------------- ① 审计 + 自动修复 ---------------- */
+$("#btnClean").onclick = async () => {
+  if (!requirePaths() || !requireOut()) return;
+  const files = selected.map(s => s.path);
+  $("#btnClean").disabled = true; $("#btnCleanCancel").style.display = "";
+  $("#stat1").innerHTML = ""; $("#auditCard").style.display = "none";
+  $("#msg1").textContent = "提交中…";
+  const j = await api("/api/pipeline/clean", {
+    files, out: $("#outDir").value.trim(),
+    options: { names: $("#names").value.trim(), recursive: true,
+               simplify: !!($("#chkSimplified")||{}).checked },
+  });
+  if (j.error) { $("#msg1").innerHTML = `<span class="err">${escapeHtml(j.error)}</span>`;
+                 $("#btnClean").disabled=false; $("#btnCleanCancel").style.display="none"; return; }
+  lastCleanJob = j.job;
+  $("#msg1").textContent = "任务已提交：" + j.job;
+  pollJob(j.job,
+    s => { $("#bar1").style.width = (s.percent||0)+"%"; $("#msg1").textContent = s.message||""; },
+    s => { $("#btnClean").disabled=false; $("#btnCleanCancel").style.display="none";
+           $("#bar1").style.width = "100%"; $("#msg1").textContent = s.message||"完成";
+           renderAudit(s); },
+    e => { $("#btnClean").disabled=false; $("#btnCleanCancel").style.display="none";
+           $("#msg1").innerHTML = `<span class="err">失败</span>`;
+           $("#stat1").innerHTML = `<pre style="white-space:pre-wrap">${escapeHtml(e)}</pre>`; });
+};
+$("#btnCleanCancel").onclick = () => lastCleanJob && api("/api/job/cancel", {job: lastCleanJob});
+
+function renderAudit(j){
+  const rs = j.results || [];
+  const t = rs.reduce((a,r)=>({e:a.e+r.events_initial, ef:a.ef+r.events_final,
+      al:a.al+r.auto_lines, ac:a.ac+r.auto_chars, q:a.q+r.queue_items,
+      qs:a.qs+(r.queue_sent||0), ll:a.ll+(r.llm_lines||0),
+      un:a.un+r.unresolved, c:a.c+r.chars,
+      cd:a.cd+((r.metrics&&r.metrics.chars_deleted)||0),
+      ca:a.ca+((r.metrics&&r.metrics.chars_added)||0),
+      rf:a.rf+((r.metrics&&r.metrics.residual_regions_final)||0)}),
+      {e:0,ef:0,al:0,ac:0,q:0,qs:0,ll:0,un:0,c:0,cd:0,ca:0,rf:0});
+  const sev = {}; const ev = {};
+  rs.forEach(r => { for (const k in r.by_severity) sev[k]=(sev[k]||0)+r.by_severity[k];
+                    for (const k in r.by_evidence) ev[k]=(ev[k]||0)+r.by_evidence[k]; });
+  $("#stat1").innerHTML = statCards([
+    ["文件数", rs.length], ["总字符", t.c.toLocaleString()],
+    ["异常区域", t.e], ["区域→终态", t.ef],
+    ["引擎修复行/字", t.al + " / " + t.ac], ["删除/新增字", (t.cd||0) + " / " + (t.ca||0)],
+    ["审查队列", t.q], ["实际送审", t.qs||0],
+    ["LLM 修复项", t.ll], ["最终残留区域", t.rf||0],
+  ]);
+  let html = `<div class="hint">严重度分布：` +
+    ["HIGH","MEDIUM","LOW"].map(k=>`<span class="pill ${k}">${k} ${sev[k]||0}</span>`).join(" ") +
+    `&nbsp;&nbsp;证据类型：` +
+    Object.entries(ev).map(([k,v])=>`<span class="pill">${escapeHtml(k)} ${v}</span>`).join(" ") +
+    `</div>`;
+  const p0 = rs[0] && rs[0].queue;
+  if (p0 && p0.by_priority) {
+    const lbl = {1:"① 引擎可能误删真词", 2:"② 证据不足 / 引擎没动", 3:"③ 证据充分（仅记录）"};
+    html += `<div class="hint">队列优先级（只有 ① ② 会真的送 LLM）：` +
+      Object.keys(p0.by_priority).sort().map(k=>`<span class="pill">${lbl[k]||k} ${p0.by_priority[k]}</span>`).join(" ") +
+      `</div>`;
+  }
+  html += `<div class="scroll"><table>
+    <tr><th>文件</th><th>字符</th><th>异常区域</th><th>引擎修复行/字</th><th>队列/送审</th><th>残留</th><th>输出</th></tr>` +
+    rs.map(r => `<tr>
+      <td>${escapeHtml(r.name)}</td><td class="sz">${r.chars.toLocaleString()}</td>
+      <td class="sz">${r.events_initial} → ${r.events_final}</td>
+      <td class="sz">${r.auto_lines} / ${r.auto_chars}</td>
+      <td class="sz">${r.queue_items} / ${r.queue_sent||0}</td><td class="sz">${r.unresolved}</td>
+      <td class="muted" style="font-size:12px">${linkify(r.paths.cleaned)}<br>
+        ${linkify(r.paths.report)}<br>${linkify(r.paths.queue)}<br>
+        ${linkify(r.paths.log)}</td></tr>`).join("") + `</table></div>`;
+
+  const q0 = p0;
+  if (q0 && q0.items.length) {
+    html += `<h2 style="margin-top:18px">审查队列预览 <span class="tag">共 ${q0.by_severity.HIGH||0} HIGH / ${q0.by_severity.MEDIUM||0} MEDIUM，此处显示 ${q0.shown} 条</span></h2>`;
+    html += `<div class="scroll"><table>
+      <tr><th>位置</th><th>优先级</th><th>原因</th><th>严重度</th><th>区域原文</th><th>引擎改动</th><th>证据</th></tr>` +
+      q0.items.map(it => `<tr>
+        <td class="muted" style="font-size:12px">${escapeHtml(it.item_id)}<br>第 ${it.line} 行</td>
+        <td class="sz">${it.priority==null?"":it.priority}</td>
+        <td class="muted" style="font-size:12px">${escapeHtml(it.reason_code||"")}</td>
+        <td><span class="pill ${it.severity}">${it.severity}</span></td>
+        <td style="max-width:340px">${escapeHtml(it.text)}</td>
+        <td style="max-width:260px" class="muted">${
+            it.v3_pure_delete
+              ? "删除 <del>" + visibleText(it.v3_removed).html + "</del>"
+              : (it.v3_rewritten
+                 ? "改写（替换/插入，未删除字符）"
+                 : "（未改动）")}</td>
+        <td class="muted" style="font-size:12px">${(it.types||[]).join("<br>")}</td></tr>`).join("") + `</table></div>`;
+  }
+  const cl = rs[0] && rs[0].changelog_sample;
+  if (cl && cl.length) {
+    html += `<h2 style="margin-top:18px">修改抽样 <span class="tag">共 ${rs[0].auto_lines} 处引擎修复，此处显示前 ${cl.length} 条</span></h2>
+      <div class="scroll"><table><tr><th>行</th><th>方法</th><th>删除内容</th><th>新增内容</th><th>严重度</th><th>置信</th></tr>` +
+      cl.map(e => `<tr>
+        <td class="sz">${e.line}</td>
+        <td class="muted" style="font-size:12px">${e.method==="llm"?"LLM":"引擎"}</td>
+        <td><del>${visibleText(e.deleted).html}</del></td>
+        <td>${escapeHtml(e.replacement||"")}</td>
+        <td><span class="pill ${e.severity}">${e.severity||""}</span></td>
+        <td class="sz">${e.confidence||""}</td></tr>`).join("") +
+      `</table></div>`;
+  }
+  $("#auditBody").innerHTML = html;
+  $("#auditCard").style.display = "block";
+}
+/* 点开输出文件：桌面版调原生外壳在资源管理器里定位，浏览器版退回 /api/reveal。
+   不要改用 /api/download 的 attachment 下载：WebView2 会整个窗口未响应。 */
+function openPath(p){
+  if (!p) return false;
+  if (window.pywebview && window.pywebview.api && window.pywebview.api.open_path) {
+    window.pywebview.api.open_path(p);
+  } else {
+    window.open("/api/reveal?path=" + encodeURIComponent(p), "_blank");
+  }
+  return false;
+}
+function linkify(p){
+  if (!p) return "";
+  return `<a href="#" data-p="${escapeHtml(p)}"`
+       + ` onclick="return openPath(this.dataset.p)">${escapeHtml(baseName(p))}</a>`;
+}
+
+/* ---------------- ② LLM 配置 ---------------- */
+async function llmLoad(){
+  const j = await api("/api/llm/config");
+  if (j.error) { $("#llmMsg").innerHTML = `<span class="err">${escapeHtml(j.error)}</span>`; return; }
+  const c = j.config;
+  if (c.base_url) $("#llmBase").value = c.base_url;
+  if (c.model) { $("#llmModelManual").value = c.model; ensureOption(c.model); $("#llmModel").value = c.model; }
+  $("#llmTimeout").value = c.timeout; $("#llmConc").value = c.concurrency;
+  $("#llmRetries").value = c.retries; $("#llmMax").value = c.max_items;
+  $("#llmTemp").value = c.temperature; $("#llmJson").checked = !!c.json_mode;
+  $("#llmSaveKey").checked = !!c.save_key;
+  $("#llmCfgPath").innerHTML = `配置文件：<code>${escapeHtml(j.config_path)}</code>　` +
+    (c.has_key ? `已保存 Key：<code>${escapeHtml(c.key_masked)}</code>（留空即沿用）`
+               : `<span class="warn">尚未保存 API Key</span>`) +
+    `　语料：${escapeHtml((j.engine.lm||"未加载"))}`;
+  $("#engineBadge").textContent = "语料：" + (j.engine.lm || "未加载");
+}
+function ensureOption(v){
+  const sel = $("#llmModel");
+  if (![...sel.options].some(o => o.value === v)) {
+    const o = document.createElement("option"); o.value = v; o.textContent = v;
+    sel.appendChild(o);
+  }
+}
+function llmBody(){
+  const manual = $("#llmModelManual").value.trim();
+  const sel = $("#llmModel").value;
+  return {
+    base_url: $("#llmBase").value.trim(),
+    api_key: $("#llmKey").value,
+    model: manual || sel,
+    timeout: +$("#llmTimeout").value, concurrency: +$("#llmConc").value,
+    retries: +$("#llmRetries").value, max_items: +$("#llmMax").value,
+    temperature: +$("#llmTemp").value, json_mode: $("#llmJson").checked,
+    save_key: $("#llmSaveKey").checked,
+  };
+}
+$("#btnModels").onclick = async () => {
+  const b = llmBody();
+  if (!b.base_url) { alert("请先填 API 地址"); return; }
+  $("#llmMsg").textContent = "正在获取模型列表…";
+  const j = await api("/api/llm/models", b);
+  if (j.error) { $("#llmMsg").innerHTML = `<span class="err">${escapeHtml(j.error)}</span>`; return; }
+  const sel = $("#llmModel"); sel.innerHTML = "";
+  j.models.forEach(m => { const o=document.createElement("option"); o.value=m; o.textContent=m; sel.appendChild(o); });
+  if (j.current && j.models.includes(j.current)) sel.value = j.current;
+  else $("#llmModelManual").value = "";
+  $("#llmMsg").innerHTML = `<span class="ok">共 ${j.models.length} 个模型</span>`;
+};
+$("#btnProbe").onclick = async () => {
+  const b = llmBody();
+  if (!b.base_url || !b.model) { alert("请先填 API 地址并选择模型"); return; }
+  $("#llmMsg").textContent = "正在测试连接（会消耗极少 token）…";
+  const j = await api("/api/llm/probe", b);
+  if (!j.ok) { $("#llmMsg").innerHTML = `<span class="err">${escapeHtml(j.error)}</span>`; return; }
+  $("#llmMsg").innerHTML = `<span class="ok">连接正常</span> · 模型 ${escapeHtml(j.model)} · 返回 decision=${escapeHtml(j.decision||"?")}`;
+};
+
+/* ---------------- ② 执行 LLM 审查 ---------------- */
+let lastReviewJob = null;
+$("#btnReview").onclick = async () => {
+  if (!requirePaths() || !requireOut()) return;
+  const b = llmBody();
+  if (!b.base_url || !b.model) { alert("请先在「LLM 连接」里填好 API 地址并选择模型"); switchTab("llm"); return; }
+  if (!b.api_key) {
+    const j0 = await api("/api/llm/config");
+    if (!(j0.config && j0.config.has_key)) { alert("请填写 API Key"); switchTab("llm"); return; }
+  }
+  const n = b.max_items === 0 ? "不限" : b.max_items + " 项";
+  if (!confirm(`将调用你的 LLM 审查队列，本次最多 ${n}，并发 ${b.concurrency}，单请求超时 ${b.timeout}s。\n\n会产生真实 API 费用，确认开始？`)) return;
+
+  $("#btnReview").disabled = true; $("#btnReviewCancel").style.display = "";
+  $("#stat2").innerHTML = ""; $("#reviewCard").style.display = "none";
+  $("#msg2").textContent = "提交中…";
+  const j = await api("/api/pipeline/review", {
+    files: selected.map(s => s.path), out: $("#outDir").value.trim(),
+    options: { names: $("#names").value.trim(), llm: b, saveConfig: true, recursive: true },
+  });
+  if (j.error) { $("#msg2").innerHTML = `<span class="err">${escapeHtml(j.error)}</span>`;
+                 $("#btnReview").disabled=false; $("#btnReviewCancel").style.display="none"; return; }
+  lastReviewJob = j.job;
+  $("#msg2").textContent = "任务已提交：" + j.job;
+  pollJob(j.job,
+    s => { $("#bar2").style.width = (s.percent||0)+"%"; $("#msg2").textContent = s.message||""; },
+    s => { $("#btnReview").disabled=false; $("#btnReviewCancel").style.display="none";
+           $("#bar2").style.width = "100%"; $("#msg2").textContent = s.message||"完成";
+           renderReview(s); },
+    e => { $("#btnReview").disabled=false; $("#btnReviewCancel").style.display="none";
+           $("#msg2").innerHTML = `<span class="err">失败</span>`;
+           $("#stat2").innerHTML = `<pre style="white-space:pre-wrap">${escapeHtml(e)}</pre>`; });
+};
+$("#btnReviewCancel").onclick = () => lastReviewJob && api("/api/job/cancel", {job: lastReviewJob});
+
+function renderReview(j){
+  const rs = j.results || [];
+  const t = rs.reduce((a,r)=>({al:a.al+r.auto_lines, ac:a.ac+r.auto_chars,
+      ll:a.ll+r.llm_lines, lc:a.lc+r.llm_chars, q:a.q+r.queue_items,
+      qs:a.qs+(r.queue_sent||0),
+      la:a.la+((r.metrics&&r.metrics.llm_added_chars)||0),
+      k:a.k+r.kept, u:a.u+r.uncertain, un:a.un+r.unresolved}),
+      {al:0,ac:0,ll:0,lc:0,q:0,qs:0,la:0,k:0,u:0,un:0});
+  const st = (j.llm && j.llm.total !== undefined) ? j.llm : {};
+  $("#stat2").innerHTML = statCards([
+    ["文件数", rs.length], ["队列项", t.q], ["实际送审", t.qs],
+    ["送审成功", st.ok ?? "-"], ["送审失败", st.fail ?? "-"],
+    ["超出上限未送", st.skipped ?? "-"],
+    ["LLM 修复行", t.ll], ["LLM 删除字", t.lc], ["LLM 新增字", t.la],
+    ["LLM 判定保留", t.k], ["仍不确定", t.u], ["最终待审", t.un],
+  ]);
+  let html = "";
+  if (st.errors && st.errors.length) {
+    html += `<div class="hint"><span class="err">失败样例：</span>` +
+      st.errors.slice(0,5).map(e=>`<code>${escapeHtml(e.item_id)}: ${escapeHtml(e.error)}</code>`).join(" ") + `</div>`;
+  }
+  html += `<div class="scroll"><table>
+    <tr><th>文件</th><th>auto 行/字</th><th>LLM 行/字</th><th>保留</th><th>未定</th><th>待审</th><th>输出（点击打开）</th></tr>` +
+    rs.map(r => `<tr>
+      <td>${escapeHtml(r.name)}</td>
+      <td class="sz">${r.auto_lines} / ${r.auto_chars}</td>
+      <td class="sz">${r.llm_lines} / ${r.llm_chars}</td>
+      <td class="sz">${r.kept}</td><td class="sz">${r.uncertain}</td>
+      <td class="sz">${r.unresolved}</td>
+      <td style="font-size:12px">${linkify(r.paths.cleaned)}（已应用 LLM）<br>
+        ${r.auto_path ? linkify(r.auto_path)+"（未应用 LLM）<br>" : ""}
+        ${linkify(r.paths.log)} · ${linkify(r.paths.report)} · ${linkify(r.paths.queue)}</td>
+      </tr>`).join("") + `</table></div>`;
+
+  // LLM 改动抽样：服务端单独抽的 llm_sample
+  const cl = rs.flatMap(r => (r.llm_sample||[]).map(e=>({...e, file:r.name})));
+  if (cl.length) {
+    html += `<h2 style="margin-top:18px">LLM 改动抽样 `
+         + `<span class="tag">共 ${t.ll} 行 / ${t.lc} 字，此处显示 ${cl.length} 条</span></h2>
+      <div class="hint">用「未应用 LLM」和「已应用 LLM」两份输出对比，就能看出 LLM 这一步的净效果。</div>
+      <div class="scroll"><table><tr><th>文件</th><th>行</th><th>LLM 接手前</th><th>LLM 改后</th>`
+         + `<th>删除</th><th>新增</th><th>决策</th><th>置信</th><th>理由</th></tr>` +
+      cl.map(e => `<tr><td class="muted" style="font-size:12px">${escapeHtml(e.file)}</td>
+        <td class="sz">${e.line}</td>
+        <td style="max-width:280px">${escapeHtml(e.before||"")}</td>
+        <td style="max-width:280px">${escapeHtml(e.after||"")}</td>
+        <td><del>${visibleText(e.deleted).html}</del></td>
+        <td>${e.added ? `<ins>${visibleText(e.added).html}</ins>` : `<span class="muted">—</span>`}</td>
+        <td class="muted" style="font-size:12px">${escapeHtml(e.decision||"")}`
+          + `${e.candidate ? " / " + escapeHtml(e.candidate) : ""}</td>
+        <td class="sz">${e.confidence||""}</td>
+        <td class="muted" style="font-size:12px;max-width:260px">${escapeHtml(e.reason||"")}</td>
+        </tr>`).join("") +
+      `</table></div>`;
+  } else if (t.ll > 0) {
+    html += `<div class="hint">LLM 改过 ${t.ll} 行，但抽样为空（可能是日志里没有 llm 条目，`
+         + `请检查 changelog.json）。</div>`;
+  }
+  // LLM 判定保留抽样：它看过但决定不动的行
+  const kp = rs.flatMap(r => (r.llm_kept_sample||[]).map(e=>({...e, file:r.name})));
+  if (kp.length) {
+    html += `<h2 style="margin-top:18px">LLM 判定保留抽样 `
+         + `<span class="tag">此处显示 ${kp.length} 条（未改动正文）</span></h2>
+      <div class="hint">这些是 LLM 看过、但判断"不该动"的行 —— 抽样条数少不代表只处理了这么多。</div>
+      <div class="scroll"><table><tr><th>文件</th><th>行</th><th>原文</th>`
+         + `<th>判定</th><th>置信</th><th>理由</th></tr>` +
+      kp.map(e => `<tr><td class="muted" style="font-size:12px">${escapeHtml(e.file)}</td>
+        <td class="sz">${e.line}</td>
+        <td style="max-width:340px">${escapeHtml(e.text||"")}</td>
+        <td class="muted" style="font-size:12px">${escapeHtml(e.decision||"")}</td>
+        <td class="sz">${e.confidence||""}</td>
+        <td class="muted" style="font-size:12px;max-width:280px">${escapeHtml(e.reason||"")}</td>
+        </tr>`).join("") +
+      `</table></div>`;
+  }
+  $("#reviewBody").innerHTML = html;
+  $("#reviewCard").style.display = "block";
+}
+
+
+/* ---------------- 启动 ---------------- */
+llmLoad();
+</script>
+<script src="/pywebview_bridge.js"></script>
+</body>
+</html>
