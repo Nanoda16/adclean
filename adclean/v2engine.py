@@ -81,7 +81,6 @@ class V2Config:
     edit_cost: float = 0.8         # 每次编辑的固定代价
     # --- 决策阈值（Δ = 改后分数 - KEEP 分数）---
     auto_cut: float = 3.5          # >= 自动改（保留给强污染证据）
-    review_cut: float = 1.5        # >= 待审核（不改，只记录）
     # --- 垃圾字画像 ---
     weak_pair: int = 1             # 左/右搭配次数 <= 此值才算"极弱"
     weak_tri: int = 3              # trigram 次数 <= 此值才算"无像样搭配"

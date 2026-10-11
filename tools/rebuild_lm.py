@@ -16,7 +16,8 @@ import sys
 import time
 
 sys.stdout.reconfigure(encoding="utf-8")
-sys.path.insert(0, r"F:\xwechat_files\txt-ad-cleaner")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
 from adclean import charclass as cc                             # noqa: E402
 from adclean.processor import list_txt_files, read_text         # noqa: E402
@@ -24,8 +25,11 @@ from adclean.t2s import to_simplified                           # noqa: E402
 from adclean.v2lm import LanguageModel                          # noqa: E402
 from adclean.v2runner import clean_filter                       # noqa: E402
 
-SRC = r"F:\xwechat_files\wxid_1jan9t1vnpsb22_064d\msg\file\2026-10"
-TAGD = r"F:\xwechat_files\txt-ad-cleaner"
+# 干净语料目录：用环境变量 ADCLEAN_CORPUS_DIR 指定
+SRC = os.environ.get("ADCLEAN_CORPUS_DIR", os.path.join(ROOT, "corpus"))
+TAGD = ROOT
+# 诊断/中间产物输出目录（仓库内，已 gitignore）
+CACHE = os.environ.get("ADCLEAN_CACHE_DIR", os.path.join(ROOT, "tools", ".cache"))
 A0C = os.path.join(TAGD, ".adclean-lm-a0c.json")
 A5 = os.path.join(TAGD, ".adclean-lm-a5.json")
 
@@ -35,6 +39,11 @@ MUST_KEEP = set(
     "焖焗汀邬裠夯钙嶙翱童整看严"
     "荷尔朦胧酸碱酶蛋白质脂肪胺酊酯醚酚酮"
 )
+
+
+def _cache_file(name: str) -> str:
+    os.makedirs(CACHE, exist_ok=True)
+    return os.path.join(CACHE, name)
 
 
 def load_texts():
@@ -99,7 +108,7 @@ def main():
     if args.stage == "diag":
         json.dump({"bad": "".join(cand),
                    "counts": {c: a0.uni.get(c, 0) for c in cand}},
-                  open(r"F:\xwechat_files\_ad_probe\lm_bad.json", "w",
+                  open(_cache_file("lm_bad.json"), "w",
                        encoding="utf-8"), ensure_ascii=False, indent=1)
         print("\n（诊断模式，未写模型）")
         return 0
@@ -158,7 +167,7 @@ def main():
         json.dump({"kept_lines": kept, "total_lines": total,
                    "danger": danger[:200], "a4_total": a4.total,
                    "a4_vocab": len(a4.uni)},
-                  open(r"F:\xwechat_files\_ad_probe\lm_rebuild.json", "w",
+                  open(_cache_file("lm_rebuild.json"), "w",
                        encoding="utf-8"), ensure_ascii=False, indent=1)
         print("\n-> %s" % A5)
         return 0
@@ -197,9 +206,9 @@ def main():
         print("      %s 原书 %d 次%s" % (c, n, "  ← 被剔除" if c in bad else ""))
     json.dump({"bad": "".join(cand), "danger": danger[:200],
                "a5_total": a5.total, "a5_vocab": len(a5.uni)},
-              open(r"F:\xwechat_files\_ad_probe\lm_rebuild.json", "w",
+              open(_cache_file("lm_rebuild.json"), "w",
                    encoding="utf-8"), ensure_ascii=False, indent=1)
-    print("\n-> %s\n-> %s" % (A5, r"F:\xwechat_files\_ad_probe\lm_rebuild.json"))
+    print("\n-> %s\n-> %s" % (A5, _cache_file("lm_rebuild.json")))
     return 0
 
 

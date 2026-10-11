@@ -41,6 +41,13 @@ report.json
 .coverage
 htmlcov/
 
+# ---------------- 本地测试数据（不进仓库）----------------
+# tools/eval_pair.py 需要一对测试书；tools/rebuild_lm.py 需要干净语料。
+# 都放在这里，用环境变量或命令行指定。
+testdata/
+corpus/
+tools/.cache/
+
 # 临时/备份文件
 *.bak
 *.tmp

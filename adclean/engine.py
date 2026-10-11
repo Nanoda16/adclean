@@ -210,16 +210,6 @@ class Model:
         self.ad_chars = ad
         self.sus_windows = n_sus_windows
 
-    def is_ad_char(self, ch: str) -> bool:
-        return ch in self.ad_chars
-
-    def has_real_partner(self, ch: str, ratio: float) -> bool:
-        """该字是否"本来就属于正文用字"：最强搭配次数远高于其总出现次数。"""
-        f = self.char_freq.get(ch, 0)
-        if f <= 0:
-            return False
-        return self.char_maxbigram.get(ch, 0) >= max(f * ratio, 8.0)
-
     # -- 评分 --------------------------------------------------------------
     def pair_score(self, a: str, b: str, alpha: float = 2.0) -> float:
         """相邻两字的自然度分数；从未共现返回 -alpha。"""
@@ -390,8 +380,6 @@ class Config:
     max_edits_per_line: int = 60
     # 次罕用字阈值：语料出现次数低于此值的汉字也纳入候选
     common_threshold: int = 12000
-    # 候选向两侧扩张的汉字个数
-    expand: int = 1
     # 足迹之间最多夹多少个字符仍视为同一段
     bridge: int = 3
     # 清洗残留所需的删除增益
@@ -449,14 +437,6 @@ class Config:
     weak_bigram: int = 60
     # 数字同音字加分只在"该字不算常用"时生效
     homo_freq: int = 4000
-    # 已废弃（保留兼容，不再使用）
-    max_region: int = 24
-    bridge: int = 3
-    common_threshold: int = 12000
-    cleanup_gain: float = 0.5
-    keep_min_count: int = 50
-    rare_lexicon_floor: int = 8
-    very_rare_freq: int = 8
 
 
 # =========================================================================== 结果

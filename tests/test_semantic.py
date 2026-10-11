@@ -12,6 +12,12 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# 生产语言模型：仓库不含（101MB 超过 GitHub 单文件上限），
+# 从 Releases 下载放到仓库根目录即可启用下面两个测试。
+LM_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    ".adclean-lm-a5.json")
+
 from adclean.semantic import (SemanticCleaner, SemanticConfig, SemanticEngine,
                               build_cleaner)
 from adclean.v2lm import LanguageModel
@@ -168,7 +174,7 @@ def test_does_not_delete_common_word(cleaner):
 
 
 @pytest.mark.skipif(
-    not os.path.exists(r"F:\xwechat_files\txt-ad-cleaner\.adclean-lm-a5.json"),
+    not os.path.exists(LM_PATH),
     reason="生产语言模型不存在")
 def test_production_lm_keeps_simplified_words():
     """覆/著 在简体里合法，绝不能删。"""
@@ -183,7 +189,7 @@ def test_production_lm_keeps_simplified_words():
 
 
 @pytest.mark.skipif(
-    not os.path.exists(r"F:\xwechat_files\txt-ad-cleaner\.adclean-lm-a5.json"),
+    not os.path.exists(LM_PATH),
     reason="生产语言模型不存在")
 def test_real_line_matches_polished_edition():
     """这一行清洗后必须与精校版逐字对齐。"""

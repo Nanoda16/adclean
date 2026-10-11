@@ -7,9 +7,14 @@
 
 用法
 ----
-    python tools/eval_pair.py                     # 默认评测生产引擎（V4 语义）
+    python tools/eval_pair.py                     # 默认评测生产引擎（locate）
     python tools/eval_pair.py --engine v3         # 对比旧 V3
     python tools/eval_pair.py --json out.json     # 落盘详细结果
+
+需要一对测试书：同一本书的「有广版」与「精校版」。仓库不含这两本书，
+用 --ad-book / --clean-book 指定，或放进 --books-dir（默认 <仓库>/testdata）
+并命名为 ad.txt 与 clean.txt；也可用环境变量 ADCLEAN_AD_BOOK /
+ADCLEAN_CLEAN_BOOK / ADCLEAN_PAIR_DIR 设置。
 """
 from __future__ import annotations
 
@@ -26,10 +31,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.stdout.reconfigure(encoding="utf-8")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MSG = r"F:\xwechat_files\wxid_1jan9t1vnpsb22_064d\msg\file\2026-10"
-AD_BOOK = os.path.join(MSG, "哪有人的青春恋爱物语从魔女审判开始啊！.txt")
-CLEAN_BOOK = os.path.join(MSG, "哪有人的青春恋爱物语从魔女审判开始啊！ (1).txt")
-CACHE = os.path.join(r"F:\xwechat_files\_ad_probe", "pair_gold.json")
+# 一对测试书所在目录（仓库不含书，需自行提供）
+BOOKS_DIR = os.environ.get("ADCLEAN_PAIR_DIR", os.path.join(ROOT, "testdata"))
+AD_BOOK = os.environ.get("ADCLEAN_AD_BOOK", "")
+CLEAN_BOOK = os.environ.get("ADCLEAN_CLEAN_BOOK", "")
+# 金标准缓存：默认写在仓库内 tools/.cache/（已 gitignore）
+CACHE = os.environ.get("ADCLEAN_PAIR_CACHE",
+                       os.path.join(ROOT, "tools", ".cache", "pair_gold.json"))
 
 WS = str.maketrans("", "", " \t\r\u00a0\u3000")
 GAP = re.compile(r"[ \u3000]{6,}")
@@ -46,9 +54,19 @@ def _pure_punct(s: str) -> bool:
 
 
 def load_books():
-    with open(AD_BOOK, encoding="utf-8-sig") as f:
+    ad = AD_BOOK or os.path.join(BOOKS_DIR, "ad.txt")
+    clean = CLEAN_BOOK or os.path.join(BOOKS_DIR, "clean.txt")
+    for p in (ad, clean):
+        if not os.path.exists(p):
+            raise SystemExit(
+                "找不到测试用书：%s\n"
+                "用 --ad-book / --clean-book 指定，或把一对文件放进 %s\n"
+                "并命名为 ad.txt 与 clean.txt；也可设环境变量 "
+                "ADCLEAN_AD_BOOK / ADCLEAN_CLEAN_BOOK / ADCLEAN_PAIR_DIR。"
+                % (p, BOOKS_DIR))
+    with open(ad, encoding="utf-8-sig") as f:
         a = f.read().split("\n")
-    with open(CLEAN_BOOK, encoding="utf-8-sig") as f:
+    with open(clean, encoding="utf-8-sig") as f:
         b = f.read().split("\n")
     return a, b
 
@@ -187,10 +205,26 @@ def evaluate(engine, a, gold, clean_ok, kind=""):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--engine", default="semantic", choices=("semantic", "v3"))
+    ap.add_argument("--engine", default="locate",
+                    choices=("locate", "semantic", "v3"),
+                    help="要评测的引擎（默认就是生产引擎 locate）")
     ap.add_argument("--json", default="")
     ap.add_argument("--rebuild-gold", action="store_true")
+    ap.add_argument("--books-dir", default=BOOKS_DIR,
+                    help="测试书所在目录（默认 <仓库>/testdata）")
+    ap.add_argument("--ad-book", default="", help="有广版 txt 路径")
+    ap.add_argument("--clean-book", default="", help="精校版 txt 路径")
+    ap.add_argument("--cache", default=CACHE, help="金标准缓存路径")
     args = ap.parse_args()
+
+    g = globals()
+    g["BOOKS_DIR"] = args.books_dir
+    if args.ad_book:
+        g["AD_BOOK"] = args.ad_book
+    if args.clean_book:
+        g["CLEAN_BOOK"] = args.clean_book
+    g["CACHE"] = args.cache
+    os.makedirs(os.path.dirname(os.path.abspath(CACHE)), exist_ok=True)
 
     from adclean.pipeline import build_engine
     from adclean.semantic import SemanticConfig

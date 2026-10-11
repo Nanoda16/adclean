@@ -124,10 +124,10 @@ def test_real_world_line_untouched():
 
 def test_clean_book_is_barely_touched():
     """干净简体书转换后改动必须 <100 字。"""
-    p = (r"F:\xwechat_files\wxid_1jan9t1vnpsb22_064d\msg\file\2026-10"
-         r"\哪有人的青春恋爱物语从魔女审判开始啊！ (1).txt")
-    if not os.path.exists(p):
-        pytest.skip("样例书不存在")
+    # 样例书不在仓库里；要跑这个测试就用环境变量指定一本干净简体书
+    p = os.environ.get("ADCLEAN_SAMPLE_BOOK", "")
+    if not p or not os.path.exists(p):
+        pytest.skip("未设置 ADCLEAN_SAMPLE_BOOK（一本干净简体 txt）")
     with open(p, encoding="utf-8-sig") as f:
         t = f.read()
     u = to_simplified(t)
