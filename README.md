@@ -23,7 +23,7 @@
 
 ## 下载使用（普通用户）
 
-1. 到 [Releases](../../releases) 下载最新版压缩包
+1. 到 [Releases](https://github.com/Nanoda16/adclean/releases) 下载最新版压缩包
 2. **整个文件夹解压**（不要只拿 exe，旁边那个 101 MB 的文件是必需的）
 3. 双击 `adclean.exe`
 
@@ -149,7 +149,7 @@ python -m adclean book.txt -o out  # 命令行
 Windows 上也可以双击 `start.bat`（打开浏览器界面，方便调试）。
 
 > **源码仓库不含 101 MB 的语言模型缓存**（超过 GitHub 单文件 100 MB 上限）。
-> 从源码运行时，请从 [Releases](../../releases) 下载压缩包，把里面的
+> 从源码运行时，请从 [Releases](https://github.com/Nanoda16/adclean/releases) 下载压缩包，把里面的
 > `.adclean-lm-a5.json` 放到项目根目录。程序会在「源码目录 → exe 目录 → 当前目录」
 > 中按 `LM_CANDIDATES` 顺序自动查找。
 
