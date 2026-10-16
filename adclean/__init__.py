@@ -58,4 +58,4 @@ __all__ = [
     "PipelineConfig", "PipelineResult", "run_book", "run_files",
 ]
 
-__version__ = "0.2.0"
+__version__ = "1.1.0"
