@@ -90,8 +90,6 @@
 各类污染清除率：结构广告行 100%、章尾广告 100%、不可见字符 100%、私用区字符 100%、
 非 BMP 字符 98.6%、生僻水印字 91.6%、装饰符 83.8%、数字谐音 90.3%、常用水印字 65.7%。
 
-> 实验记录见 [`LOCATE_EXPERIMENT.md`](LOCATE_EXPERIMENT.md)，与旧引擎的逐项对比见 [`DELIVERY.md`](DELIVERY.md)。
-
 ---
 
 ## 输出文件
@@ -161,14 +159,6 @@ Windows 上也可以双击 `start.bat`（打开浏览器界面，方便调试）
 python build_exe.py      # 产物在 dist/adclean/，双击其中的 adclean.exe
 ```
 
-### 测试
-
-```bash
-python -m pytest tests -q      # 148 个测试
-python verify_dist.py          # 无界面校验打包产物
-python verify_ui.py            # 无界面校验界面文案与结构
-```
-
 ---
 
 ## 高级：LLM 审查（默认关闭）
@@ -187,25 +177,28 @@ python verify_ui.py            # 无界面校验界面文案与结构
 
 ```
 adclean/
+  __main__.py     统一入口：无参数开窗口，带参数走命令行
   locate.py       多特征字位定位器（默认引擎）
   ads.py          11 条整行广告规则
   audit.py        异常区域审计（只读旁路，不阻挡主引擎）
-  pipeline.py     主管线：门禁 → 定位 → 审计 → 审查队列 → 可选 LLM
+  pipeline.py     主管线：繁→简 → 门禁 → 定位 → 审计 → 审查队列 → 可选 LLM
   review.py       审查队列与决策（含 DELETE_ONLY 约束）
+  t2s.py          繁→简转换（默认开启）
   engine.py       V2 字频引擎
   v2engine.py     V2 引擎
-  v3engine.py     句子级语义引擎
+  v3engine.py     V3 字频引擎
   semantic.py     句子级语义引擎封装
   v2lm.py         n-gram 语言模型（纯标准库）
   charclass.py    Unicode 字符分类与可疑区段
   structure.py    括号/引号结构异常检测
+  llm.py          OpenAI 兼容客户端（可选，默认不联网）
   gui.py          pywebview 桌面外壳
   server.py       本地 HTTP 服务（界面后端）
   static/         前端页面
   data/           拼音表、定位模型、简繁映射表
-tests/            148 个测试
-tools/            语料与映射表构建脚本
-benchmarks/       效果评测
+launcher.py       exe 入口（日志与崩溃提示）
+build_exe.py      PyInstaller 打包脚本
+start.bat         源码模式一键启动
 ```
 
 ---
