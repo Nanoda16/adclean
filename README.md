@@ -2,7 +2,9 @@
 
 清理盗版小说 TXT 里被塞进去的广告、乱码和隐形字符。
 
-**只删不改**：只做删除，不替换、不改写正文（繁→简转换默认关闭，需手动开启）。
+**只删不改**：正文只做删除，不替换、不改写句子。
+默认先做一次繁→简字形转换（繁体字换成简体字），这是本工具唯一的字形改写，
+可用 `--no-simplify` 关掉；不转换时简繁混排的书容易把繁体正文误判成插入字。
 所有处理都在本地完成，不联网、不上传。
 
 ```
@@ -118,7 +120,7 @@ python -m adclean book.txt --engine semantic   # 句子级语义判据
 python -m adclean book.txt --engine v3         # 旧字频引擎，保留用于对比
 
 # 其它
-python -m adclean book.txt --simplify          # 额外做繁→简转换（默认关闭）
+python -m adclean book.txt --no-simplify       # 关掉繁→简转换，保留原字形
 python -m adclean "D:\小说" --dry-run           # 只统计不写文件
 ```
 
@@ -130,7 +132,7 @@ python -m adclean "D:\小说" --dry-run           # 只统计不写文件
 | `--engine` | `locate` | 引擎选择 |
 | `--near-k` / `--near-w` | `4` / `20` | 上下文异常数规则：窗口内至少几个异常位 |
 | `--trim` | `0.5` | 边界回撤阈值，`0` 关闭 |
-| `--simplify` | 关 | 繁→简转换（属于改写，默认不做） |
+| `--simplify` / `--no-simplify` | 开 | 繁→简字形转换。开启会把繁体字换成简体字（唯一的字形改写）；关闭则保留原字形 |
 | `--names` | 空 | 人名/专名白名单，这些字永不判为可疑 |
 
 ---

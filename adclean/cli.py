@@ -63,6 +63,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="V2 语言模型缓存路径（默认 .adclean-lm.json）")
     g.add_argument("--v2-rebuild", action="store_true",
                    help="忽略 V2 语言模型缓存，强制重建")
+    g.add_argument("--no-simplify", action="store_true",
+                   help="关闭繁→简转换（默认开启，仅影响 --v2 分支）")
     return p
 
 
@@ -72,9 +74,11 @@ def _run_v2(args, files: list[str], progress) -> int:
     from .v2runner import get_language_model, process_files_v2
 
     cache = "" if args.no_model_cache else (args.v2_cache or "")
-    sys.stderr.write("V2 引擎：构建字符级 unigram/bigram/trigram 语言模型…\n")
+    simplify = not args.no_simplify
+    sys.stderr.write("V2 引擎：构建字符级 unigram/bigram/trigram 语言模型…"
+                     "（字形：%s）\n" % ("繁→简" if simplify else "保留原字形"))
     lm = get_language_model(files, cache, progress=progress,
-                            rebuild=args.v2_rebuild)
+                            rebuild=args.v2_rebuild, simplify=simplify)
     st = lm.stats()
     sys.stderr.write(
         "\n语言模型：%d 行 / %d 字 / 单字 %d / 双字对 %d / 三字组 %d "
@@ -90,7 +94,8 @@ def _run_v2(args, files: list[str], progress) -> int:
 
     reports = process_files_v2(
         files, out_dir, lm, cfg, progress=progress,
-        report_path=report_path, same_folder=args.in_place_suffix)
+        report_path=report_path, same_folder=args.in_place_suffix,
+        simplify=simplify)
     sys.stderr.write("\n")
     tot_changed = tot_deleted = tot_repl = tot_review = 0
     for r in reports:

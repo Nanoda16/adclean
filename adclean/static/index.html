@@ -146,7 +146,7 @@ label.chk{display:flex;gap:7px;align-items:center;color:var(--dim);font-size:13p
         会删掉的东西：<br>
         · 整行广告（网页标签 / 网址 / 群号 / 上传者水印 / 章尾求票）<br>
         · 句内插入的乱码、零宽字符、异常符号<br>
-        没有广告痕迹的书一个字都不动；原文件不会被覆盖。
+        没有插入痕迹的书一个字都不删；原文件不会被覆盖。
       </div>
       <div class="row">
         <label class="fld" style="max-width:520px">人名 / 专名白名单（逗号分隔，这些字永不作为可疑字）
@@ -154,10 +154,11 @@ label.chk{display:flex;gap:7px;align-items:center;color:var(--dim);font-size:13p
         </label>
       </div>
       <div class="row">
-        <label class="chk"><input type="checkbox" id="chkSimplified">
-          输出简体（繁→简转换）</label>
+        <label class="chk"><input type="checkbox" id="chkSimplified" checked>
+          先做繁→简转换（输出简体）</label>
         <span class="muted" style="font-size:12px">
-          默认关闭。开启会把繁体字换成简体字（属于改写）。
+          默认开启。会把繁体字换成简体字（属于字形改写）；取消勾选则保留原字形，
+          简繁混排的书可能把繁体正文误判成插入字删掉。
         </span>
       </div>
       <div class="row">

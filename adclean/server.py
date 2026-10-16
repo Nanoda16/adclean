@@ -167,7 +167,7 @@ def run_job(job_id: str, files: list[str], out_dir: str, cfg: Config,
 
 
 # --------------------------------------------------------------------------- 新链路
-def _pipeline_cfg(job_id: str, llm_on: bool, simplify: bool = False):
+def _pipeline_cfg(job_id: str, llm_on: bool, simplify: bool = True):
     from .audit import AuditConfig
     from .pipeline import PipelineConfig
     cfg = PipelineConfig(simplify=bool(simplify))
@@ -299,7 +299,7 @@ def _prepare_files(files: list) -> list:
 
 
 def run_pipeline_job(job_id: str, files: list, out_dir: str, use_llm: bool,
-                     names=(), llm_cfg=None, simplify: bool = False) -> None:
+                     names=(), llm_cfg=None, simplify: bool = True) -> None:
     """新链路：use_llm=False 只做审计+自动修复；True 再接 LLM 审查并写回。"""
     try:
         _set(job_id, state="running", stage="engine", percent=0,
@@ -618,7 +618,7 @@ class Handler(BaseHTTPRequestHandler):
                 target=run_pipeline_job,
                 args=(jid, files, out_dir, use_llm,
                       [s for s in str(opts.get("names", "")).split(",") if s],
-                      llm_cfg, bool(opts.get("simplify", False))),
+                      llm_cfg, bool(opts.get("simplify", True))),
                 daemon=True).start()
             return self._json({"job": jid, "files": len(files), "out": out_dir,
                                "use_llm": use_llm})

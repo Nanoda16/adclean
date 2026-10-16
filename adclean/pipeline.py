@@ -125,8 +125,9 @@ class PipelineConfig:
     llm_progress: object = None    # callable(done, total, ok, fail)
     cancel: object = None          # callable() -> bool，返回 True 则停止送审
     # --- 其它 ---
-    # 繁→简转换：默认关闭，开启会改写正文。
-    simplify: bool = False
+    # 繁→简转换：默认开启（繁体字会被换成简体字，属于字形改写）。
+    # 关闭它则保留原字形，但简繁混排的书容易把繁体正文当插入字误删。
+    simplify: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -634,9 +635,12 @@ def run_book(text: str, engine: V3Engine, cfg: PipelineConfig | None = None,
     if cfg.reaudit:
         rounds = 1
         res.cleaned = "\n".join(cur)
-        fin = v3_auto_repair(engine, cur)
+        # 主引擎一个字都没删、也没有任何 LLM 决策改动正文时，cur 与原文完全一致，
+        # 此时终审那次引擎重跑必然给出与 v3 相同的结果，直接复用即可省一遍全量定位。
+        fin = v3 if (not v3 and llm_lines == 0) else v3_auto_repair(engine, cur)
         layer_f = AuditLayer(engine, cfg.audit)
-        res.final_events = layer_f.scan_book(res.cleaned, book_id, proposals=fin)
+        res.final_events = layer_f.scan_book(res.cleaned, book_id,
+                                             proposals=fin)
 
         if cfg.final_review_rounds > 0:
             decided = {it.line_start for it in queue if it.decision}
@@ -660,16 +664,20 @@ def run_book(text: str, engine: V3Engine, cfg: PipelineConfig | None = None,
                         resolver.prepare(cand_items, progress=cfg.llm_progress)
                     except Exception:                        # noqa: BLE001
                         pass
+                applied_before = llm_lines
                 for it in cand_items:
                     queue.append(it)
                     _apply_item(it, 2)
                 final_round_items = len(cand_items)
                 rounds += 1
-                res.cleaned = "\n".join(cur)
-                fin = v3_auto_repair(engine, cur)
-                layer_f = AuditLayer(engine, cfg.audit)
-                res.final_events = layer_f.scan_book(res.cleaned, book_id,
-                                                     proposals=fin)
+                # 只有真改动了正文才需要再跑一遍引擎和终审扫描：没有改动时
+                # cur 与上面那次完全相同，重跑必然得到同样的结果，白花时间。
+                if llm_lines > applied_before:
+                    res.cleaned = "\n".join(cur)
+                    fin = v3_auto_repair(engine, cur)
+                    layer_f = AuditLayer(engine, cfg.audit)
+                    res.final_events = layer_f.scan_book(res.cleaned, book_id,
+                                                         proposals=fin)
 
     # ================================================================
     # 六、统计与报告（§十四/§十五 E）
@@ -796,10 +804,11 @@ def main(argv=None) -> int:
     p.add_argument("--llm-max-priority", type=int, default=2,
                    help="送审优先级上限（1=引擎删了常用字 2=证据不足 3=只记录）")
     p.add_argument("--max-llm-items", type=int, default=0)
-    p.add_argument("--simplify", action="store_true",
-                   help="额外做繁→简转换（默认关；开启后正文会被改写，")
-    p.add_argument("--no-simplify", action="store_true",
-                   help="已废弃：现在默认就不做繁→简，保留只为兼容老命令")
+    p.add_argument("--simplify", action=argparse.BooleanOptionalAction,
+                   default=True,
+                   help="先做繁→简转换（默认开启，用 --no-simplify 关闭）。"
+                        "开启后繁体字会被换成简体字，属于字形改写；"
+                        "关闭则保留原字形，但简繁混排的书可能把繁体正文误判成插入字")
     p.add_argument("--no-final-review", action="store_true",
                    help="关闭 Final Audit 之后的那 1 轮复审")
     p.add_argument("--dump-prompts", default="",
@@ -848,12 +857,15 @@ def main(argv=None) -> int:
         sys.stderr.write("v4 判据: 句子级语义正常性（正读+反读），每删一字代价 %.3f\n"
                          % engine.cleaner._penalty)
 
+    sys.stderr.write("字形: %s\n" % ("先做繁→简转换（默认）" if args.simplify
+                                 else "保留原字形（--no-simplify）"))
+
     resolver = None
     if args.resolve:
         from .review import MappingResolver
         resolver = MappingResolver.from_json(args.resolve)
 
-    cfg = PipelineConfig(simplify=bool(getattr(args, "simplify", False)),
+    cfg = PipelineConfig(simplify=bool(args.simplify),
                          llm_max_priority=args.llm_max_priority,
                          max_llm_items=args.max_llm_items,
                          final_review_rounds=0 if args.no_final_review else 1)
