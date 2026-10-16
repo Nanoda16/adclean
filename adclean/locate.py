@@ -214,6 +214,11 @@ class Locator:
         self.py = _Pinyin(pinyin_path)
         self.SYL = self.py.syl
         self.GROUP = self.py.group
+        # 每个音节的组内最高字频：加载后 uni/GROUP 不再变动，预先算好，
+        # 免得 py_disguise 每次都对整个同音组扫一遍。
+        uni_freq = self.uni
+        self.GMAX = {s: max(uni_freq.get(x, 0) for x in g)
+                     for s, g in self.GROUP.items() if g}
         path = model_path or DEFAULT_MODEL
         with open(path, "rb") as fh:
             d = pickle.load(fh)
@@ -234,10 +239,9 @@ class Locator:
         s = self.SYL.get(ch)
         if not s:
             return 0.0
-        g = self.GROUP.get(s, ())
-        if not g:
+        comm = self.GMAX.get(s)
+        if comm is None:
             return 0.0
-        comm = max((self.uni.get(x, 0) for x in g), default=0)
         return _l1(comm) - _l1(self.uni.get(ch, 0))
 
     def full_book_stats(self, lines):
@@ -290,6 +294,9 @@ class Locator:
         seams = [self.seam_of(chars, i) for i in range(n)]
         line_max = max(seams) if seams else 0.0
         SYL, GROUP = self.SYL, self.GROUP
+        # 字级量按行算一遍就够，窗口特征直接查这两个表，不再逐窗重算。
+        syls = [SYL.get(c) for c in chars]
+        disguises = [self.py_disguise(c) for c in chars]
 
         X = np.zeros((n, N_FEAT), dtype=np.float64)
         for i, ch in enumerate(chars):
@@ -329,11 +336,9 @@ class Locator:
             fv[IDX["左同音"]] = 1.0 if (sl and SYL.get(L) == sl) else 0.0
             fv[IDX["右同音"]] = 1.0 if (sl and SYL.get(R) == sl) else 0.0
             lo, hi = max(0, i - 10), min(n, i + 11)
-            fv[IDX["邻域同音密度"]] = (sum(1 for j in range(lo, hi)
-                                       if SYL.get(chars[j]) == sl and sl) / 10.0)
-            fv[IDX["伪装度"]] = self.py_disguise(ch)
-            fv[IDX["邻域伪装度"]] = sum(self.py_disguise(chars[j])
-                                    for j in range(lo, hi)) / (hi - lo)
+            fv[IDX["邻域同音密度"]] = (syls[lo:hi].count(sl) / 10.0) if sl else 0.0
+            fv[IDX["伪装度"]] = disguises[i]
+            fv[IDX["邻域伪装度"]] = sum(disguises[lo:hi]) / (hi - lo)
             TH = 60
             fv[IDX["左成词"]] = 1.0 if bi.get(L + ch, 0) >= TH else 0.0
             fv[IDX["右成词"]] = 1.0 if bi.get(ch + R, 0) >= TH else 0.0
