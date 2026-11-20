@@ -379,7 +379,7 @@ async function browseTo(path){
   if (j.error) { body.innerHTML = `<span class="err">${escapeHtml(j.error)}</span>`; return; }
   if (j.drives) {
     body.innerHTML = "盘符：" + j.drives.map(d =>
-      `<button class="sec" style="margin:3px" onclick="browseTo('${d.replace(/\\/g,'\\\\')}')">${d}</button>`).join("")
+      `<button class="sec" style="margin:3px" data-browse-path="${escapeHtml(d)}">${escapeHtml(d)}</button>`).join("")
       + `<div class="muted" style="margin-top:6px">当前目录：<code>${escapeHtml(j.cwd)}</code></div>`;
     return;
   }
@@ -387,12 +387,12 @@ async function browseTo(path){
   $("#browsePath").value = j.path;
   let html = `<div class="muted">当前：<code>${escapeHtml(j.path)}</code></div>`;
   html += `<div style="margin:8px 0">
-    <button class="sec" onclick="browseTo(${JSON.stringify(j.parent)})">↑ 上级</button>
+    <button class="sec" data-browse-path="${escapeHtml(j.parent)}">↑ 上级</button>
     <button class="sec" onclick="useBrowseDir()">使用整个目录</button></div>`;
   if (j.dirs.length) {
     html += `<div class="muted">子目录：</div><div style="margin:4px 0 8px">` +
       j.dirs.map(d => `<button class="sec" style="margin:3px"
-        onclick="browseTo(${JSON.stringify(joinPath(j.path,d))})">${escapeHtml(d)}</button>`).join("") + `</div>`;
+        data-browse-path="${escapeHtml(joinPath(j.path,d))}">${escapeHtml(d)}</button>`).join("") + `</div>`;
   }
   if (j.files.length) {
     html += `<div class="muted">txt 文件：</div><div class="scroll"><table><tr><th>文件</th><th>大小</th></tr>` +
@@ -403,6 +403,10 @@ async function browseTo(path){
   }
   body.innerHTML = html;
 }
+$("#browseBody").addEventListener("click", (ev) => {
+  const btn = ev.target && ev.target.closest ? ev.target.closest("button[data-browse-path]") : null;
+  if (btn) browseTo(btn.getAttribute("data-browse-path") || "");
+});
 function joinPath(a,b){ return a.replace(/[\\/]+$/,"") + "\\" + b; }
 async function useBrowseDir(){
   const j = await api(`/api/list?folder=${encodeURIComponent(curBrowse)}`);
@@ -645,7 +649,8 @@ $("#btnReview").onclick = async () => {
   $("#msg2").textContent = "提交中…";
   const j = await api("/api/pipeline/review", {
     files: selected.map(s => s.path), out: $("#outDir").value.trim(),
-    options: { names: $("#names").value.trim(), llm: b, saveConfig: true, recursive: true },
+    options: { names: $("#names").value.trim(), llm: b, saveConfig: true, recursive: true,
+               simplify: !!($("#chkSimplified")||{}).checked },
   });
   if (j.error) { $("#msg2").innerHTML = `<span class="err">${escapeHtml(j.error)}</span>`;
                  $("#btnReview").disabled=false; $("#btnReviewCancel").style.display="none"; return; }

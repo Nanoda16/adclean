@@ -193,6 +193,33 @@ def _l1(x: float) -> float:
     return math.log1p(x)
 
 
+def _predict_pos_proba(model, X: np.ndarray) -> np.ndarray:
+    """直接调用底层 LightGBM Booster 预测正类概率，避免 sklearn 特征名 UserWarning 并减少封装开销。"""
+    booster = getattr(model, "booster_", None)
+    if booster is not None:
+        return np.asarray(booster.predict(X), dtype=np.float64)
+    return np.asarray(model.predict_proba(X)[:, 1], dtype=np.float64)
+
+
+def _name_positions(line: str, names) -> set[int]:
+    """返回行内命中人名/专名白名单的全部字符下标集合。"""
+    if not names or not line:
+        return set()
+    pos: set[int] = set()
+    for name in names:
+        if not name:
+            continue
+        start = 0
+        step = len(name)
+        while True:
+            idx = line.find(name, start)
+            if idx < 0:
+                break
+            pos.update(range(idx, idx + step))
+            start = idx + 1
+    return pos
+
+
 class Locator:
     """多特征字级定位器。用法：
 
@@ -390,11 +417,12 @@ class Locator:
         return reasons, dict(invisible=inv, nonbmp=nb, tagline=tag,
                              rare_per_10k=rare10k)
     # ------------------------------------------------------------ 主流程
-    def clean_lines(self, lines, progress=None, ad_line=None):
+    def clean_lines(self, lines, progress=None, ad_line=None, names=()):
         """返回 {行号: {位置}} —— 只删不改。
 
         ad_line: 可选的 `callable(line)->str|None`，命中则整行删除
                  （adclean.ads.ad_line_reason）。
+        names:   人名/专名白名单，命中的字位在字级定位阶段受保护。
         """
         text = "\n".join(lines)
         reasons, prof = self.book_gate(text)
@@ -437,7 +465,7 @@ class Locator:
             buf.append(F)
             bl.append(li)
             if len(buf) >= 1500:
-                P = self.m_line.predict_proba(np.vstack(buf))[:, 1]
+                P = _predict_pos_proba(self.m_line, np.vstack(buf))
                 o = 0
                 for b_, Fx in zip(bl, buf):
                     if float(P[o:o + len(Fx)].max()) >= self.thr_line:
@@ -449,7 +477,7 @@ class Locator:
                 if progress:
                     progress(done, work_total)
         if buf:
-            P = self.m_line.predict_proba(np.vstack(buf))[:, 1]
+            P = _predict_pos_proba(self.m_line, np.vstack(buf))
             o = 0
             for b_, Fx in zip(bl, buf):
                 if float(P[o:o + len(Fx)].max()) >= self.thr_line:
@@ -465,13 +493,13 @@ class Locator:
         for j, li in enumerate(todo):
             line = lines[li]
             F = self.build_features(lines, li, MS, MB, CN)[:, KEEP]
-            s1 = self.p1.predict_proba(F)[:, 1]
+            s1 = _predict_pos_proba(self.p1, F)
             n = len(line)
             nlv = np.zeros((n, 1))
             nrv = np.zeros((n, 1))
             nlv[1:, 0] = s1[:-1]
             nrv[:-1, 0] = s1[1:]
-            s2 = self.p2.predict_proba(np.hstack([F, nlv, nrv]))[:, 1]
+            s2 = _predict_pos_proba(self.p2, np.hstack([F, nlv, nrv]))
             hit = {i for i in range(n) if s2[i] >= self.thr_char}
 
             if self.near_k > 0 and hit:
@@ -493,11 +521,13 @@ class Locator:
                        if not ((i - 1 not in hit or i + 1 not in hit)
                                and s1[i] < self.trim)}
 
-            keep_mask = invisible_at(line) | nonbmp_at(line)
-            # 颜文字整组保护 → 字母数字 token 完整性 → 确定性字符永远删
+            force_del = invisible_at(line) | nonbmp_at(line)
+            # 颜文字整组保护 → 人名/专名白名单保护 → 字母数字 token 完整性 → 确定性不可见/非BMP字符永远删
             hit -= kao_mask(line)
+            if names:
+                hit -= _name_positions(line, names)
             hit = token_fix(line, hit)
-            hit = (hit - keep_mask) | keep_mask
+            hit |= force_del
             if hit:
                 deleted[li] = set(hit)
             if progress and (j % step2 == 0 or j == len(todo) - 1):
@@ -572,8 +602,9 @@ class LocatorEngine:
         self._index = {}
         for i, x in enumerate(lines):
             self._index.setdefault(id(x), i)
-        deleted, meta = self.loc.clean_lines(lines, progress=progress,
-                                             ad_line=ad_line_reason)
+        deleted, meta = self.loc.clean_lines(
+            lines, progress=progress, ad_line=ad_line_reason,
+            names=getattr(self.cfg, "names", ()))
         self._cache = deleted
         self.meta = meta
         out: dict = {}
@@ -611,7 +642,15 @@ class LocatorEngine:
     # -------- 保护掩码（审查层用：这些位置不参与"可疑"统计）
     # 必须是 list[bool]：audit.statistical_conf 会按位置下标访问
     def _protect_mask(self, chars) -> list:
-        return [False] * len(chars)
+        n = len(chars)
+        mask = [False] * n
+        names = getattr(self.cfg, "names", ())
+        if not names or n == 0:
+            return mask
+        line = "".join(chars)
+        for idx in _name_positions(line, names):
+            mask[idx] = True
+        return mask
 
     def suspicion(self, chars, mask, i):
         return 0.0

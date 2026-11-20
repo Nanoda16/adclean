@@ -79,21 +79,33 @@ class Api:
         return ""
 
     def open_path(self, path: str) -> int:
-        """在资源管理器里打开输出目录。"""
-        if path and os.path.exists(path):
-            try:
-                os.startfile(path)                               # noqa: S606
-                return 1
-            except Exception:                                    # noqa: BLE001
-                return 0
-        return 0
+        """在资源管理器里打开输出目录（禁止直接执行任意文件）。"""
+        if not path:
+            return 0
+        ap = os.path.abspath(path)
+        if not os.path.exists(ap):
+            return 0
+        try:
+            if os.name == "nt":
+                import subprocess
+                if os.path.isdir(ap):
+                    os.startfile(ap)                             # noqa: S606
+                else:
+                    # 对文件仅用资源管理器定位，防止通过 os.startfile 执行 .exe/.bat
+                    subprocess.Popen(["explorer", "/select,", ap])
+            else:
+                import subprocess
+                folder = ap if os.path.isdir(ap) else os.path.dirname(ap)
+                subprocess.Popen(["xdg-open", folder])
+            return 1
+        except OSError:
+            return 0
 
 
 BANNER = r"""
    adclean — 中文小说 TXT 广告清理
    ---------------------------------------------------------------
-   默认档位 = 深度清洗（多特征定位器），正文只做删除。
-   默认先做一次繁→简字形转换（界面里可取消勾选）。
+   默认档位 = 深度清洗（多特征定位器），只删不改。
    直接拖 .txt 到窗口里，或点"选择文件"。
 """
 

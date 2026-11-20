@@ -11,6 +11,7 @@ import re
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
@@ -36,6 +37,10 @@ CONFIG_PATH = config_path()
 
 class LLMError(Exception):
     """面向使用者的错误（消息里绝不含 api_key）。"""
+
+    def __init__(self, message: str, *, retryable: bool = True):
+        super().__init__(message)
+        self.retryable = retryable
 
 
 # ---------------------------------------------------------------- 配置
@@ -66,7 +71,10 @@ class LLMConfig:
     def chat_url(self) -> str:
         b = self._base()
         if not b:
-            raise LLMError("未填写 API 地址（base_url）")
+            raise LLMError("未填写 API 地址（base_url）", retryable=False)
+        parsed = urllib.parse.urlparse(b)
+        if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+            raise LLMError("API 地址必须是以 http:// 或 https:// 开头的合法 URL", retryable=False)
         if not re.search(r"/v\d+[a-z]*$", b, re.I):
             b += "/v1"
         return b + "/chat/completions"
@@ -93,9 +101,18 @@ class LLMConfig:
         return out
 
     def as_public_dict(self) -> dict:
-        """给前端：**不含** api_key 明文。"""
+        """给前端：**不含** api_key 明文，且对 extra_headers 中敏感头脱敏。"""
         d = asdict(self)
         d.pop("api_key", None)
+        raw_hdrs = d.get("extra_headers") or {}
+        safe_hdrs = {}
+        for hk, hv in raw_hdrs.items():
+            kl = str(hk).lower()
+            if any(tok in kl for tok in ("auth", "key", "token", "secret", "cookie")):
+                safe_hdrs[hk] = "***"
+            else:
+                safe_hdrs[hk] = hv
+        d["extra_headers"] = safe_hdrs
         d["has_key"] = bool(self.api_key)
         d["key_masked"] = self.masked_key()
         d["chat_url"] = ""
@@ -182,10 +199,10 @@ def _request(url: str, cfg: LLMConfig, payload=None, method: str | None = None,
     except urllib.error.URLError as e:
         reason = getattr(e, "reason", e)
         if isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
-            raise LLMError("请求超时（%.0fs）" % (timeout or cfg.timeout))
-        raise LLMError("无法连接：%s" % reason)
+            raise LLMError("请求超时（%.0fs）" % (timeout or cfg.timeout), retryable=True)
+        raise LLMError("无法连接：%s" % cfg.redact(str(reason)), retryable=True)
     except TimeoutError:
-        raise LLMError("请求超时（%.0fs）" % (timeout or cfg.timeout))
+        raise LLMError("请求超时（%.0fs）" % (timeout or cfg.timeout), retryable=True)
 
 
 def _brief(body: str, limit: int = 300) -> str:
@@ -193,32 +210,33 @@ def _brief(body: str, limit: int = 300) -> str:
     return s[:limit]
 
 
-def _http_error(status: int, body: str, cfg: LLMConfig) -> LLMError:
-    msg = cfg.redact(_brief(body))
-    if status == 401:
-        return LLMError("401 未授权：API Key 无效或已过期。%s" % msg)
-    if status == 403:
-        return LLMError("403 拒绝访问：Key 无权限或该模型未开通。%s" % msg)
-    if status == 404:
-        return LLMError("404 找不到接口：API 地址可能不对（%s）。%s"
-                        % (cfg.redact(cfg.chat_url()), msg))
-    if status == 429:
-        return LLMError("429 触发限流：请降低并发或稍后重试。%s" % msg)
-    return LLMError("HTTP %d：%s" % (status, msg))
-
-
 _RETRY_STATUS = (408, 409, 425, 429, 500, 502, 503, 504)
 
 
+def _http_error(status: int, body: str, cfg: LLMConfig) -> LLMError:
+    msg = cfg.redact(_brief(body))
+    retryable = status in _RETRY_STATUS
+    if status == 401:
+        return LLMError("401 未授权：API Key 无效或已过期。%s" % msg, retryable=False)
+    if status == 403:
+        return LLMError("403 拒绝访问：Key 无权限或该模型未开通。%s" % msg, retryable=False)
+    if status == 404:
+        return LLMError("404 找不到接口：API 地址可能不对（%s）。%s"
+                        % (cfg.redact(cfg.chat_url()), msg), retryable=False)
+    if status == 429:
+        return LLMError("429 触发限流：请降低并发或稍后重试。%s" % msg, retryable=True)
+    return LLMError("HTTP %d：%s" % (status, msg), retryable=retryable)
+
+
 def _with_retry(cfg: LLMConfig, fn, on_retry=None):
-    """按 cfg.retries 次指数退避重试。fn() 返回结果或抛 LLMError。"""
+    """按 cfg.retries 次指数退避重试。仅对可重试瞬态错误（如 429/5xx/超时）重试。"""
     last = None
     for attempt in range(cfg.retries + 1):
         try:
             return fn()
         except LLMError as e:
             last = e
-            if attempt >= cfg.retries:
+            if not getattr(e, "retryable", True) or attempt >= cfg.retries:
                 break
             wait = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
             if on_retry:

@@ -370,7 +370,8 @@ class AuditLayer:
         传入时直接复用，本层不重跑引擎。
         """
         cfg = self.cfg
-        lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        norm_text = text.replace("\r\n", "\n").replace("\r", "\n")
+        lines = norm_text.split("\n")
         offs = []
         acc = 0
         for ln in lines:
@@ -452,9 +453,9 @@ class AuditLayer:
             # 末区域用最后一行的 hi（相对那一行）
             abs_lo = offs[raw[k][0]] + raw[k][1]
             abs_hi = offs[raw[j][0]] + raw[j][2]
-            body = text[abs_lo:abs_hi]
+            body = norm_text[abs_lo:abs_hi]
             n_chars = max(1, abs_hi - abs_lo)
-            keys = {(e.type, offs[raw[k][0]] + e.pos) for e in ev_all}
+            keys = {(e.type, offs[e.line] + e.pos) for e in ev_all}
             n_ev = len(keys)
             n_ind = len({x for x in keys if x[0] != EV_ENGINE_PROPOSAL})
             sev = self._severity(ev_all, n_ind, n_chars)

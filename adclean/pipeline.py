@@ -44,7 +44,7 @@ FROZEN_V3 = dict(
     anchor_beta=0.0,
 )
 
-DEFAULT_NAMES = ("常榕", "艾玛", "黑部奈叶香", "樱羽艾玛")
+DEFAULT_NAMES: tuple[str, ...] = ()
 
 
 def build_engine(lm_path: str = "", names=DEFAULT_NAMES,
@@ -60,6 +60,11 @@ def build_engine(lm_path: str = "", names=DEFAULT_NAMES,
     if kind == "locate":
         from .locate import LocatorEngine
         eng = LocatorEngine(lm, lm_path=path, overrides=overrides)
+        if names:
+            eng.cfg.names = tuple(names)
+        if overrides and "names" in overrides:
+            eng.cfg.names = tuple(overrides["names"])
+        eng._engine_kind = kind
         return eng
     if kind == "v3":
         eng = V3Engine(lm)
@@ -498,7 +503,7 @@ def run_book(text: str, engine: V3Engine, cfg: PipelineConfig | None = None,
             "deleted": "".join(lines[li][j] for j in sorted(rm)),
             "result_text": cur[li],
             "method": "rule_engine",
-            "engine": "v3",
+            "engine": getattr(engine, "_engine_kind", "locate"),
             "margin": round(v3[li][1], 3),
             "evidence": [e.as_dict() for e in ev.evidence][:8] if ev else [],
             "severity": ev.severity if ev else "",
@@ -643,7 +648,8 @@ def run_book(text: str, engine: V3Engine, cfg: PipelineConfig | None = None,
                                              proposals=fin)
 
         if cfg.final_review_rounds > 0:
-            decided = {it.line_start for it in queue if it.decision}
+            # ReviewItem.line_start 是 1-based 行号，转换为 0-based 行下标再与 li 对比
+            decided = {it.line_start - 1 for it in queue if it.decision}
             cand_items: list = []
             seen2: set = set()
             for ev in res.final_events:
@@ -700,9 +706,10 @@ def run_book(text: str, engine: V3Engine, cfg: PipelineConfig | None = None,
     by_prio: dict = {}
     for it in queue:
         by_prio[it.priority] = by_prio.get(it.priority, 0) + 1
+    eng_kind = getattr(engine, "_engine_kind", "locate")
     res.report = {
         "book_id": book_id,
-        "engine": "semantic_auto_repair + audit + llm_review + final_audit",
+        "engine": "%s_auto_repair + audit + llm_review + final_audit" % eng_kind,
         "lm": os.path.basename(getattr(engine, "_lm_path", "") or ""),
         "chars_total": len(text),
         "chars_final": len(res.cleaned),
@@ -724,7 +731,7 @@ def run_book(text: str, engine: V3Engine, cfg: PipelineConfig | None = None,
             "residual_regions_final": fh.get("events", 0),
         },
         "auto_repair": {"lines": auto_lines, "chars": auto_chars,
-                        "engine": "v3", "gated": False},
+                        "engine": eng_kind, "gated": False},
         "llm_review": {"items": len(queue), "sent": len(to_send) + final_round_items,
                        "final_round_items": final_round_items,
                        "lines": llm_lines, "chars": llm_chars,

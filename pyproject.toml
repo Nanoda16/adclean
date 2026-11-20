@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "adclean"
+version = "1.1.0"
+description = "基于 36 维局部搭配特征与两阶段 LightGBM 定位器的中文小说 TXT 广告清理与可审计校对工具"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.24",
+    "lightgbm>=4.0",
+    "scikit-learn>=1.3",
+]
+
+[project.optional-dependencies]
+gui = ["pywebview>=5.0"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+adclean = "adclean.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["adclean*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

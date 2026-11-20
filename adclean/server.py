@@ -86,10 +86,19 @@ def get_llm_cfg():
         return _LLM_CFG["obj"]
 
 
+def _same_origin_url(url_a: str, url_b: str) -> bool:
+    """判断两个 API base_url 是否同源（同 scheme + netloc），防止覆写 base_url 窃取已存 Key。"""
+    if not url_a or not url_b:
+        return False
+    pa, pb = urlparse(url_a.strip()), urlparse(url_b.strip())
+    return (pa.scheme.lower(), pa.netloc.lower()) == (pb.scheme.lower(), pb.netloc.lower())
+
+
 def merge_llm(body: dict):
     """用请求体覆盖已存配置；未提供的字段保持原值。
 
-    不提供 `api_key`（或为空串）→ 沿用已保存的 key；`clear_key=true` → 清空。
+    安全约束：不提供 `api_key`（或为空串）时，仅当未更换 `base_url` 主机才沿用已存 key；
+    `clear_key=true` → 清空。
     """
     from .llm import LLMConfig
     base = get_llm_cfg()
@@ -106,6 +115,8 @@ def merge_llm(body: dict):
         kw["api_key"] = ""
     elif isinstance(key, str) and key.strip():
         kw["api_key"] = key.strip()
+    elif "base_url" in kw and kw["base_url"] and base.base_url and not _same_origin_url(kw["base_url"], base.base_url):
+        kw["api_key"] = ""
     return LLMConfig(**{**base.__dict__, **kw}).clamp()
 
 
@@ -306,7 +317,11 @@ def run_pipeline_job(job_id: str, files: list, out_dir: str, use_llm: bool,
              message="正在加载 clean n-gram 语料（首次约 10~20 秒）…")
         eng = get_engine()
         if names:
-            eng.cfg.whitelist_words = tuple(names)
+            t_names = tuple(names)
+            if hasattr(eng.cfg, "names"):
+                eng.cfg.names = t_names
+            if hasattr(eng.cfg, "whitelist_words"):
+                eng.cfg.whitelist_words = t_names
         _set(job_id, percent=2, message="语料就绪：%s"
              % os.path.basename(getattr(eng, "_lm_path", "")))
 
@@ -370,13 +385,24 @@ def run_pipeline_job(job_id: str, files: list, out_dir: str, use_llm: bool,
         _set(job_id, state="done", percent=100, stage="done",
              message="完成：%d 个文件" % len(results), results=results,
              llm=stats)
-    except Exception:
-        _set(job_id, state="error", percent=100, message="处理失败",
-             trace=traceback.format_exc())
+    except Exception as exc:
+        _set(job_id, state="error", percent=100,
+             message="处理失败：%s: %s" % (type(exc).__name__, exc))
 
 
 # --------------------------------------------------------------------------- HTTP
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
+_MAX_BODY_BYTES = 10 * 1024 * 1024
+
+
+def _would_overwrite_source(files: list[str], out_dir: str) -> str:
+    """检查输出目录是否会覆盖任意源 .txt 文件；若冲突返回冲突源文件路径。"""
+    out_real = os.path.realpath(out_dir)
+    for src in files:
+        dst_real = os.path.realpath(os.path.join(out_real, os.path.basename(src)))
+        if dst_real == os.path.realpath(src):
+            return src
+    return ""
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -398,12 +424,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def _read_json(self) -> dict:
         n = int(self.headers.get("Content-Length") or 0)
+        if n < 0 or n > _MAX_BODY_BYTES:
+            raise ValueError("请求体过大")
         if not n:
             return {}
         return json.loads(self.rfile.read(n).decode("utf-8"))
 
     def _csrf_ok(self) -> bool:
-        """拒绝来自其它站点的浏览器请求（本机 UI 不带 Origin 或为 localhost）。"""
+        """拒绝来自其它站点或 DNS Rebinding 的浏览器请求。"""
+        host_hdr = (self.headers.get("Host") or "").strip()
+        if host_hdr:
+            h_host = urlparse("http://" + host_hdr).hostname or ""
+            if h_host not in _LOCAL_HOSTS:
+                return False
         origin = self.headers.get("Origin") or ""
         if not origin:
             return True
@@ -593,6 +626,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": "没有可处理的 txt 文件"}, 400)
             out_dir = body.get("out") or os.path.join(
                 os.path.dirname(files[0]), "cleaned_audit")
+            if _would_overwrite_source(files, out_dir):
+                return self._json({"error": "输出目录不能与原文件所在目录相同，请更换输出目录以保护原文件"}, 400)
             opts = body.get("options") or {}
             llm_cfg = None
             if use_llm:
@@ -630,16 +665,18 @@ class Handler(BaseHTTPRequestHandler):
             _set(jid, message="正在取消…")
             return self._json({"ok": True})
 
-        if u.path == "/api/clean":                              # 旧链路
-            files = [f for f in body.get("files", []) if isinstance(f, str)]
+        if u.path == "/api/clean":                              # 旧链路（仅允许 .txt 文件，防任意文件读取）
+            files = _prepare_files(body.get("files") or [])
             folder = body.get("folder") or ""
             if folder and os.path.isdir(folder):
                 files.extend(list_txt_files(folder, recursive=bool(body.get("recursive", True))))
-            files = [os.path.abspath(f) for f in dict.fromkeys(files) if os.path.isfile(f)]
+                files = _prepare_files(files)
             if not files:
                 return self._json({"error": "没有可处理的 txt 文件"}, 400)
             out_dir = body.get("out") or os.path.join(os.path.dirname(files[0]), "cleaned")
             same_folder = bool(body.get("sameFolder", False))
+            if not same_folder and _would_overwrite_source(files, out_dir):
+                return self._json({"error": "输出目录不能与原文件所在目录相同"}, 400)
             opts = body.get("options") or {}
             cfg = Config(
                 alpha=float(opts.get("alpha", Config.alpha)),
