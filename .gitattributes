@@ -1,6 +1,18 @@
 # 仓库内统一用 LF；.bat 必须是 CRLF，否则老版本 cmd 可能出错
 * text=auto
+*.py text eol=lf
+*.js text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.tsv text eol=lf
 *.bat text eol=crlf
+*.cmd text eol=crlf
 *.pkl binary
 *.png binary
 *.jpg binary

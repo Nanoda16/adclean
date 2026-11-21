@@ -8,7 +8,6 @@
 import multiprocessing
 import os
 import sys
-import traceback
 
 
 def _log_path() -> str:
@@ -18,9 +17,10 @@ def _log_path() -> str:
         os.makedirs(d, exist_ok=True)
         return os.path.join(d, "adclean.log")
     except OSError:
-        # 退回到 exe 同目录
-        return os.path.join(os.path.dirname(os.path.abspath(sys.executable)),
-                            "adclean.log")
+        return os.path.join(
+            os.path.dirname(os.path.abspath(sys.executable)),
+            "adclean.log",
+        )
 
 
 def _attach_parent_console() -> bool:
@@ -30,10 +30,9 @@ def _attach_parent_console() -> bool:
         k = ctypes.windll.kernel32
         if not k.AttachConsole(-1):        # ATTACH_PARENT_PROCESS
             return False
-        # windowed 模式下标准句柄无效，需要重新打开
-        sys.stdout = open("CONOUT$", "w", encoding="utf-8", buffering=1)
-        sys.stderr = open("CONOUT$", "w", encoding="utf-8", buffering=1)
-        sys.stdin = open("CONIN$", "r", encoding="utf-8")
+        sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace", buffering=1)
+        sys.stderr = open("CONOUT$", "w", encoding="utf-8", errors="replace", buffering=1)
+        sys.stdin = open("CONIN$", "r", encoding="utf-8", errors="replace")
         return True
     except Exception:                                            # noqa: BLE001
         return False
@@ -43,7 +42,7 @@ def _setup_logging():
     """把 stdout/stderr 指到日志文件（windowed 打包下它们默认是 None）。"""
     path = _log_path()
     try:
-        fh = open(path, "a", encoding="utf-8", buffering=1)
+        fh = open(path, "a", encoding="utf-8", errors="replace", buffering=1)
     except OSError:
         return None
     fh.write("\n" + "=" * 70 + "\n")
@@ -57,7 +56,7 @@ def _fatal(exc: BaseException, log: str):
     """把崩溃写进日志并弹一个原生消息框（不依赖任何 GUI 库）。"""
     try:
         import traceback as tb
-        with open(log, "a", encoding="utf-8") as fh:
+        with open(log, "a", encoding="utf-8", errors="replace") as fh:
             fh.write("崩溃：\n" + "".join(tb.format_exception(exc)) + "\n")
     except OSError:
         pass
@@ -66,7 +65,9 @@ def _fatal(exc: BaseException, log: str):
         ctypes.windll.user32.MessageBoxW(
             None,
             "adclean 启动失败：\n\n%s\n\n详细日志：\n%s" % (exc, log),
-            "adclean", 0x10)
+            "adclean",
+            0x10,
+        )
     except Exception:                                            # noqa: BLE001
         pass
 

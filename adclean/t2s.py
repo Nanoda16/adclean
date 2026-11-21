@@ -10,22 +10,26 @@
 from __future__ import annotations
 
 import os
+import re
 
-_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
-_PATH = os.path.join(_DIR, 't2s.tsv')
-_PATH_PHRASES = os.path.join(_DIR, 't2s_phrases.tsv')
+from .patterns import JobCancelledError
+
+_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+_PATH = os.path.join(_DIR, "t2s.tsv")
+_PATH_PHRASES = os.path.join(_DIR, "t2s_phrases.tsv")
 
 _T2S: dict[str, str] | None = None
 _PHRASES: dict[str, str] | None = None
-_MAX_PHRASE = 0
+_PHRASE_RE: re.Pattern | None = None
+_TRANS: dict[int, str] | None = None
 
 
 def _read_tsv(path: str) -> dict[str, str]:
     m: dict[str, str] = {}
     try:
-        with open(path, encoding='utf-8') as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
-                parts = line.rstrip('\n').split('\t')
+                parts = line.rstrip("\r\n").split("\t")
                 if len(parts) == 2 and parts[0] and parts[1]:
                     m[parts[0]] = parts[1]
     except OSError:
@@ -34,35 +38,41 @@ def _read_tsv(path: str) -> dict[str, str]:
 
 
 def _load() -> tuple[dict[str, str], dict[str, str]]:
-    global _T2S, _PHRASES, _MAX_PHRASE
+    global _T2S, _PHRASES, _PHRASE_RE, _TRANS
     if _T2S is None:
         _T2S = _read_tsv(_PATH)
         _PHRASES = _read_tsv(_PATH_PHRASES)
-        _MAX_PHRASE = max((len(k) for k in _PHRASES), default=0)
+        if _PHRASES:
+            ordered = sorted(_PHRASES, key=lambda k: (-len(k), k))
+            _PHRASE_RE = re.compile("|".join(re.escape(k) for k in ordered))
+        else:
+            _PHRASE_RE = None
+        _TRANS = str.maketrans(_T2S) if _T2S else {}
     return _T2S, _PHRASES or {}
 
 
-def _convert_phrases(text: str, phrases: dict[str, str], m: dict[str, str]) -> str:
-    """短语优先，最长匹配；短语之外的单字再走字级表。"""
-    if not phrases:
-        return ''.join(m.get(ch, ch) for ch in text)
+def _convert_chunk(text: str, phrases: dict[str, str],
+                   rx: re.Pattern | None, trans: dict[int, str]) -> str:
+    """单块文本转换：预编译最长短语正则 + C 级单字 translate 查表。"""
+    if not text:
+        return text
+    if rx is None or not phrases:
+        return text.translate(trans) if trans else text
     out: list[str] = []
-    i = 0
-    n = len(text)
-    while i < n:
-        hit = None
-        for L in range(min(_MAX_PHRASE, n - i), 1, -1):
-            seg = text[i:i + L]
-            if seg in phrases:
-                hit = (L, phrases[seg])
-                break
-        if hit:
-            out.append(hit[1])
-            i += hit[0]
-        else:
-            out.append(m.get(text[i], text[i]))
-            i += 1
-    return ''.join(out)
+    last = 0
+    for mt in rx.finditer(text):
+        s, e = mt.span()
+        if s > last:
+            seg = text[last:s]
+            out.append(seg.translate(trans) if trans else seg)
+        out.append(phrases[mt.group(0)])
+        last = e
+    if last == 0:
+        return text.translate(trans) if trans else text
+    if last < len(text):
+        tail = text[last:]
+        out.append(tail.translate(trans) if trans else tail)
+    return "".join(out)
 
 
 def char_table() -> dict[str, str]:
@@ -75,22 +85,39 @@ def phrase_table() -> dict[str, str]:
     return dict(_load()[1])
 
 
-def to_simplified(text: str) -> str:
-    """把文本里的繁体字转成简体。表外的字原样保留。
-
-    不要改用 str.translate：对超大映射表会静默失效。
-    """
+def to_simplified(text: str, cancel_check=None) -> str:
+    """把文本里的繁体字转成简体。表外的字原样保留。"""
+    if cancel_check is not None and cancel_check():
+        raise JobCancelledError("任务已取消")
     m, phrases = _load()
     if not m and not phrases:
         return text
-    if not any(ch in m for ch in text) and not any(p in text for p in phrases):
-        return text
-    return _convert_phrases(text, phrases, m)
+    rx = _PHRASE_RE
+    trans = _TRANS or {}
+    if cancel_check is not None and len(text) > 200_000:
+        # 仅在需要响应取消且文本较大时按换行边界分块，避免短语跨块截断
+        out: list[str] = []
+        pos = 0
+        n = len(text)
+        step = 200_000
+        while pos < n:
+            if cancel_check():
+                raise JobCancelledError("任务已取消")
+            end = min(n, pos + step)
+            if end < n:
+                nl = text.find("\n", end)
+                end = (nl + 1) if nl >= 0 else n
+            out.append(_convert_chunk(text[pos:end], phrases, rx, trans))
+            pos = end
+        return "".join(out)
+    return _convert_chunk(text, phrases, rx, trans)
 
 
 def has_traditional(text: str) -> bool:
-    m, phrases = _load()
-    return any(ch in m for ch in text) or any(p in text for p in phrases)
+    m, _phrases = _load()
+    if any(ch in m for ch in text):
+        return True
+    return bool(_PHRASE_RE and _PHRASE_RE.search(text))
 
 
 def table_size() -> int:

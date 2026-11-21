@@ -7,6 +7,7 @@ confidence / reason；优先级 operations > selected_candidate > final_text。
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Callable, Protocol
 
@@ -233,24 +234,67 @@ class CallableResolver(_ReviewAlias):
 # ---------------------------------------------------------------------------
 # 结构化输出解析 / 校验
 # ---------------------------------------------------------------------------
+_FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.I)
+
+
+def _extract_json_dict(raw_str: str):
+    """尽量从带说明文字或围栏代码块的文本中提取合法 JSON 对象（dict）。"""
+    s = raw_str.strip()
+    if not s:
+        return None
+    try:
+        val = json.loads(s)
+        if isinstance(val, dict):
+            return val
+    except Exception:                                  # noqa: BLE001
+        pass
+
+    for m in _FENCE_RE.finditer(s):
+        inner = m.group(1).strip()
+        try:
+            val = json.loads(inner)
+            if isinstance(val, dict):
+                return val
+        except Exception:                              # noqa: BLE001
+            sub = _scan_json_objects(inner)
+            if sub is not None:
+                return sub
+
+    return _scan_json_objects(s)
+
+
+def _scan_json_objects(s: str):
+    dec = json.JSONDecoder()
+    first_dict = None
+    idx = 0
+    while True:
+        pos = s.find("{", idx)
+        if pos < 0:
+            break
+        try:
+            obj, end = dec.raw_decode(s, pos)
+            if isinstance(obj, dict):
+                if "decision" in obj:
+                    return obj
+                if first_dict is None:
+                    first_dict = obj
+            idx = max(pos + 1, end)
+        except Exception:                              # noqa: BLE001
+            idx = pos + 1
+    return first_dict
+
+
 def parse_decision(obj) -> dict:
     """把 LLM 输出（dict 或 JSON 字符串）规整成标准决策 dict；解析失败 → uncertain。"""
     if obj is None:
         return {"decision": DECISION_UNCERTAIN, "confidence": 0.0,
                 "reason": "空输出"}
     if isinstance(obj, str):
-        s = obj.strip()
-        if s.startswith("```"):
-            s = s.strip("`")
-            i = s.find("{")
-            j = s.rfind("}")
-            if i >= 0 and j > i:
-                s = s[i:j + 1]
-        try:
-            obj = json.loads(s)
-        except Exception:                              # noqa: BLE001
+        parsed = _extract_json_dict(obj)
+        if parsed is None:
             return {"decision": DECISION_UNCERTAIN, "confidence": 0.0,
                     "reason": "输出不是合法 JSON", "raw": obj[:200]}
+        obj = parsed
     if not isinstance(obj, dict):
         return {"decision": DECISION_UNCERTAIN, "confidence": 0.0,
                 "reason": "输出不是对象"}
@@ -275,19 +319,41 @@ def parse_decision(obj) -> dict:
     return out
 
 
-def _op_apply(region: str, region_start: int, ops: list) -> tuple:
+def _merge_delete_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """合并重叠或相邻的半开删除区间 [s, e)，避免倒序删除时索引漂移误删。"""
+    valid = sorted((s, e) for s, e in ranges if e > s)
+    if not valid:
+        return []
+    merged: list[list[int]] = [[valid[0][0], valid[0][1]]]
+    for s, e in valid[1:]:
+        if s <= merged[-1][1]:
+            if e > merged[-1][1]:
+                merged[-1][1] = e
+        else:
+            merged.append([s, e])
+    return [(a, b) for a, b in merged]
+
+
+def _op_apply(region: str, region_start: int, ops: list, *,
+              delete_only: bool | None = None,
+              region_pad: int | None = None) -> tuple:
     """把 operations 落到区域文本上。
 
-    返回 (new_region_text, note)；ops 非法（越界 / 类型未知）时 new 为 None。
+    返回 (new_region_text, note)；ops 非法（越界 / 类型未知 / 重叠冲突）时 new 为 None。
     """
+    del_only = DELETE_ONLY if delete_only is None else bool(delete_only)
+    pad = REGION_PAD if region_pad is None else int(region_pad)
     chars = list(region)
     # 先校验再执行：任何一条越界都整条拒绝。
-    norm = []
+    del_ranges: list[tuple[int, int]] = []
+    other_ops: list[tuple[str, int, int, str]] = []
+    lo = region_start - pad
+    hi = region_start + len(region) + pad
     for o in ops:
         t = str(o.get("type", "")).strip().lower()
         if t not in VALID_OPS:
             return None, "未知 operation 类型 %r" % o.get("type")
-        if DELETE_ONLY and t != OP_DELETE:
+        if del_only and t != OP_DELETE:
             return None, ("只删不改：拒绝 %s 操作（可在高级设置里关闭该约束）" % t)
         try:
             s = int(o.get("start", 0))
@@ -298,14 +364,30 @@ def _op_apply(region: str, region_start: int, ops: list) -> tuple:
             s = e = int(o.get("start", 0))
         if s > e:
             s, e = e, s
-        lo = region_start - REGION_PAD
-        hi = region_start + len(region) + REGION_PAD
         if s < lo or e > hi:
             return None, ("operation 越出 Review Region（[%d,%d) 不在 [%d,%d) 内）"
                           % (s, e, lo, hi))
-        norm.append((t, s, e, str(o.get("text", ""))))
+        if t == OP_DELETE:
+            del_ranges.append((s, e))
+        else:
+            other_ops.append((t, s, e, str(o.get("text", ""))))
+
+    merged_del = _merge_delete_ranges(del_ranges)
+    if other_ops:
+        # 校验非 delete 操作不与删除区间或彼此发生重叠冲突
+        occupied = list(merged_del)
+        for t, s, e, _txt in other_ops:
+            if t == OP_REPLACE and e > s:
+                for os_, oe_ in occupied:
+                    if s < oe_ and e > os_:
+                        return None, "operations 存在重叠冲突"
+                occupied.append((s, e))
+        combined = [(OP_DELETE, s, e, "") for s, e in merged_del] + other_ops
+    else:
+        combined = [(OP_DELETE, s, e, "") for s, e in merged_del]
+
     # 从后往前应用，保证偏移不失效
-    for t, s, e, text in sorted(norm, key=lambda x: -x[1]):
+    for t, s, e, text in sorted(combined, key=lambda x: (-x[1], 0 if x[0] == OP_INSERT else 1)):
         a, b = s - region_start, e - region_start
         if t == OP_DELETE:
             del chars[a:b]
@@ -372,7 +454,8 @@ PROMPT_TEMPLATE = """你是中文小说文本校对助手。系统已经用一�
 """
 
 
-def build_prompt(item: ReviewItem) -> str:
+def build_prompt(item: ReviewItem, *, delete_only: bool | None = None) -> str:
+    del_only = DELETE_ONLY if delete_only is None else bool(delete_only)
     cand_lines = []
     for c in item.candidate_repairs:
         rm = "、".join("删除[%d,%d)" % (a, b) for a, b in c.delete_ranges) \
@@ -424,7 +507,7 @@ def build_prompt(item: ReviewItem) -> str:
         candidates="\n".join(cand_lines),
     ) + "\n【异常分数】%.2f   【原因】%s\n" % (item.anomaly_score,
                                              item.anomaly_reason or "-")
-    if DELETE_ONLY:
+    if del_only:
         _out = _out.replace(
             "  - repair     修改它。允许的操作：\n"
             "        delete   删除一段连续字符            {\"type\":\"delete\",\"start\":A,\"end\":B}\n"
@@ -460,19 +543,23 @@ def render_region(region_text: str, region_start: int, candidate: CandidateRepai
     return "".join(ch for i, ch in enumerate(region_text) if i not in rm)
 
 
-def apply_decision(item: ReviewItem, decision: dict) -> tuple:
+def apply_decision(item: ReviewItem, decision: dict, *,
+                   delete_only: bool | None = None,
+                   region_pad: int | None = None) -> tuple:
     """把结构化决策落到文本。返回 (new_region_text or None, applied_id, note)。
 
     优先级（§十）：operations > selected_candidate > final_text；
     operations 越界、final_text 长度异常（疑似整段重写）一律整条拒绝。
     """
+    del_only = DELETE_ONLY if delete_only is None else bool(delete_only)
     d = decision.get("decision", DECISION_UNCERTAIN)
     if d == DECISION_KEEP:
         return (item.default_text or item.suspicious_text), "", "keep"
     if d == DECISION_REPAIR:
         ops = decision.get("operations") or []
         if ops:
-            new, note = _op_apply(item.suspicious_text, item.start, ops)
+            new, note = _op_apply(item.suspicious_text, item.start, ops,
+                                  delete_only=del_only, region_pad=region_pad)
             if new is None:
                 return None, "", note
             if new == item.suspicious_text:
@@ -483,11 +570,11 @@ def apply_decision(item: ReviewItem, decision: dict) -> tuple:
         if cand is not None:
             return render_region(item.suspicious_text, item.start, cand), cid, ""
         ft = decision.get("final_text")
-        if ft and not DELETE_ONLY:
+        if ft and not del_only:
             if len(ft) > 20 * max(1, len(item.suspicious_text)):
                 return None, "", "final_text 长度异常（疑似整段重写），拒绝"
             return ft, "llm_free_text", "候选未命中，采用 LLM final_text"
-        if ft and DELETE_ONLY:
+        if ft and del_only:
             return None, "", "只删不改：不接受 LLM 直接给出的 final_text"
         return None, "", "decision=repair 但 selected_candidate 无效，且没有 operations/final_text"
     return None, "", "uncertain"

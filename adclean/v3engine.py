@@ -13,12 +13,11 @@ import unicodedata
 from dataclasses import dataclass, field
 
 from . import charclass as cc
+from .patterns import (DEFAULT_PROTECTED, HOMO_ALL, STRONG_PAIR,
+                       _is_cjk_symbol, _is_kana, load_default_protected,
+                       statistical_conf)
 from .structure import StructureDetector
-from .v2engine import (DEFAULT_PROTECTED, HOMO_ALL, _is_cjk_symbol, _is_kana,
-                       load_default_protected)
 from .v2lm import BOS, EOS, LanguageModel
-
-STRONG_PAIR = 10
 
 
 @dataclass
@@ -70,7 +69,7 @@ class V3Config:
     join_min: float = -99.0
     # --- 保护 ---
     whitelist_chars: frozenset = field(default_factory=lambda: DEFAULT_PROTECTED)
-    whitelist_words: tuple = ()    # 多字人名/专名，如 ("常榕", "樱羽艾玛")
+    whitelist_words: tuple = ()    # 多字人名/专名，如 ("林晚", "陈默")
     # --- 安全 ---
     kana_safe: bool = True         # 假名当正文，永不作锚点
 
@@ -236,54 +235,7 @@ class V3Engine:
 
     def suspicion(self, chars: list, mask: list, i: int) -> float:
         """位置 i 的"可疑度"（0 = 完全正常）。"""
-        cfg = self.cfg
-        n = len(chars)
-        ch = chars[i]
-        if mask[i] or ch in "\r\n\t" or cc.is_space(ch):
-            return 0.0
-        cat = unicodedata.category(ch)
-        if cc.is_invisible(ch) or cat in ("Cf", "Cc", "Co", "Cs", "Cn"):
-            return 10.0
-        if cfg.kana_safe and _is_kana(ch):
-            return 0.0
-        L = chars[i - 1] if i else BOS
-        R = chars[i + 1] if i + 1 < n else EOS
-        if cc.is_space(L):
-            L = BOS
-        if cc.is_space(R):
-            R = EOS
-        lm = self.lm
-        s = 0.0
-        if cc.is_cjk(ch):
-            f = lm.uni.get(ch, 0)
-            if f == 0:
-                s += 3.0
-            elif f <= 8:
-                s += 2.0
-            elif f <= 60:
-                s += 0.8
-            elif f <= 400:
-                s += 0.3
-            lpr = lm.bi.get(L + ch, 0)
-            rpr = lm.bi.get(ch + R, 0)
-            m = max(lpr, rpr)
-            if m <= 1:
-                s += 1.5
-            elif m < STRONG_PAIR:
-                s += 0.6
-            if ch in HOMO_ALL:
-                s += 0.4 * min(self._homo_density(chars, i) / 4.0, 2.0)
-            if cc.in_suspect_block(ch):
-                s += 1.0
-        elif ch.isascii() and ch.isalnum():
-            f = lm.uni.get(ch, 0)
-            if f <= 400 and (lm.bi.get(L + ch, 0) <= 1 or lm.bi.get(ch + R, 0) <= 1):
-                s += 1.2 + 0.4 * min(self._homo_density(chars, i) / 4.0, 2.0)
-        else:
-            # 标点/装饰：只有 CJK 符号区的非常规符号才算轻微可疑
-            if _is_cjk_symbol(ch):
-                s += 0.6
-        return s
+        return statistical_conf(self.lm, chars, mask, i, kana_safe=self.cfg.kana_safe)
 
     def anchors(self, chars: list, mask: list):
         sc = [(i, chars[i], self.suspicion(chars, mask, i)) for i in range(len(chars))]

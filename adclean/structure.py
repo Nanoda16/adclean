@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .v2engine import DECOR_SAFE, _is_cjk_symbol
+from .patterns import DECOR_SAFE, _is_cjk_symbol
 
 # 成对括号（含常用变体）
 OPEN_CLOSE = {

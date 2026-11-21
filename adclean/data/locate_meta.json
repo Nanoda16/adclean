@@ -1,0 +1,22 @@
+{
+  "format": "lightgbm-booster-v1",
+  "thr_line": 0.9999349489889661,
+  "thr_char": 0.9802315446944367,
+  "models": {
+    "m1": {
+      "file": "locate_m1.txt",
+      "num_features": 25,
+      "sha256": "5a2074060d21be8196f5c1685925663dc40c779de367e20cd29973ff07f3b2ac"
+    },
+    "p1": {
+      "file": "locate_p1.txt",
+      "num_features": 36,
+      "sha256": "07e5d07509bacd5c4c203d218f1b4998fb79527eb8389f54076cdd6598ecc25c"
+    },
+    "p2": {
+      "file": "locate_p2.txt",
+      "num_features": 38,
+      "sha256": "0afe66f14a1b49ad37d16cf934a8d6091c1364632aeeeae962ebc3773bacc5f9"
+    }
+  }
+}

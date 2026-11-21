@@ -23,12 +23,12 @@ from adclean.semantic import (SemanticCleaner, SemanticConfig, SemanticEngine,
 from adclean.v2lm import LanguageModel
 
 CLEAN = [
-    "常榕叹了口气坐到沙发旁边的书桌前，同时取出放在抽屉里的代办清单列表。",
-    "她冲到常榕身前，张开双手试图护住常榕，同时拼尽全力努力的开口叫住众人。",
+    "林晚叹了口气坐到沙发旁边的书桌前，同时取出放在抽屉里的代办清单列表。",
+    "她冲到林晚身前，张开双手试图护住林晚，同时拼尽全力努力的开口叫住众人。",
     "墙壁上镶嵌的显示屏突然亮起，一只玩偶般猫头鹰出现在了屏幕里侧。",
-    "在常榕眼前的是不知为何被白色油漆完全覆盖的牢房，以及牢房地上两具女性的尸体。",
+    "在林晚眼前的是不知为何被白色油漆完全覆盖的牢房，以及牢房地上两具女性的尸体。",
     "调色盘少女语气失落，彩虹般的双眸也眼泪汪汪，仿佛下一秒就会往外掉小彩虹糖似的。",
-    "常榕也没有示弱，默不作声笑着点点头作为回应。",
+    "林晚也没有示弱，默不作声笑着点点头作为回应。",
 ]
 # 整行广告：由 adclean.ads 的确定性规则处理，整行删除。
 AD_LINES = [
@@ -46,10 +46,10 @@ AD_LINES = [
 POLLUTED = [
     ("墙壁上镶嵌异的'显示奇屏突然亮起，一柳只玩偶般猫头鹰1出现在了屏幕e里r侧。",
      "墙壁上镶嵌的显示屏突然亮起，一只玩偶般猫头鹰出现在了屏幕里侧。"),
-    ("在常榕眼前的是不知为何被白色油漆完全覆盖的牢房。",
-     "在常榕眼前的是不知为何被白色油漆完全覆盖的牢房。"),
-    ("常榕也没霖I是wu揪s$i氿有示弱，默不作声笑着点点头作为回应。",
-     "常榕也没有示弱，默不作声笑着点点头作为回应。"),
+    ("在林晚眼前的是不知为何被白色油漆完全覆盖的牢房。",
+     "在林晚眼前的是不知为何被白色油漆完全覆盖的牢房。"),
+    ("林晚也没霖I是wu揪s$i氿有示弱，默不作声笑着点点头作为回应。",
+     "林晚也没有示弱，默不作声笑着点点头作为回应。"),
 ]
 
 
@@ -74,9 +74,9 @@ def test_engine_is_dropin_for_pipeline():
     """主链路只用 clean_line / _line_score，语义引擎必须提供同签名接口。"""
     lm = LanguageModel().fit(CLEAN * 60)
     eng = SemanticEngine(lm, SemanticConfig())
-    r = eng.clean_line("常榕也没有示弱。")
+    r = eng.clean_line("林晚也没有示弱。")
     assert hasattr(r, "cleaned") and hasattr(r, "removed")
-    assert isinstance(eng._line_score(list("常榕也没有示弱。"), ()), float)
+    assert isinstance(eng._line_score(list("林晚也没有示弱。"), ()), float)
 
 
 def test_clean_line_untouched(cleaner):
@@ -106,7 +106,7 @@ def test_ad_rule_does_not_fire_on_prose():
 
 def test_injected_chars_removed(cleaner):
     """句内插入的常用字/字母必须被删。"""
-    line = "常榕也没霖I是wu揪s$i氿有示弱。"
+    line = "林晚也没霖I是wu揪s$i氿有示弱。"
     r = cleaner.clean_line(line)
     assert "霖" not in r.cleaned and "揪" not in r.cleaned
     assert "没有示弱" in r.cleaned
@@ -114,15 +114,15 @@ def test_injected_chars_removed(cleaner):
 
 def test_protected_names_never_deleted(cleaner):
     """人名白名单里的字永不删除。"""
-    cleaner.cfg.names = ("常榕",)
-    for s in ("常榕也没有示弱。", "常榕叹了口气坐到沙发旁边。", "她冲到常榕身前。"):
+    cleaner.cfg.names = ("林晚",)
+    for s in ("林晚也没有示弱。", "林晚叹了口气坐到沙发旁边。", "她冲到林晚身前。"):
         assert cleaner.clean_line(s).removed == (), s
 
 
 def test_invisible_chars_always_removed(cleaner):
     """不可见/控制字符是 Unicode 层面的确定性事实，无条件删除。"""
-    r = cleaner.clean_line("常榕\u200b也\ufeff没有\u200d示弱。")
-    assert r.cleaned == "常榕也没有示弱。"
+    r = cleaner.clean_line("林晚\u200b也\ufeff没有\u200d示弱。")
+    assert r.cleaned == "林晚也没有示弱。"
     assert set(r.removed) == {2, 4, 7}
 
 
@@ -137,7 +137,7 @@ def test_tag_line_removed(cleaner):
 def test_cost_scale_makes_it_stricter():
     """代价越大越保守，且必须单调。"""
     lm = LanguageModel().fit(CLEAN * 60)
-    line = "常榕也没霖I是wu揪s$i氿有示弱。"
+    line = "林晚也没霖I是wu揪s$i氿有示弱。"
     a = SemanticCleaner(lm, SemanticConfig(cost_scale=1.0))
     b = SemanticCleaner(lm, SemanticConfig(cost_scale=4.0))
     assert len(a.clean_line(line).removed) >= len(b.clean_line(line).removed)
@@ -169,7 +169,7 @@ def test_pipeline_default_equals_direct_engine():
 
 def test_does_not_delete_common_word(cleaner):
     """常见词里的字不许被删。"""
-    r = cleaner.clean_line("在常榕眼前的是不知为何被白色油漆完全覆盖的牢房。")
+    r = cleaner.clean_line("在林晚眼前的是不知为何被白色油漆完全覆盖的牢房。")
     assert "覆盖" in r.cleaned
 
 
@@ -180,12 +180,12 @@ def test_production_lm_keeps_simplified_words():
     """覆/著 在简体里合法，绝不能删。"""
     from adclean.semantic import build_cleaner as bc
     c = bc()
-    for s in ("在常榕眼前的是不知为何被白色油漆完全覆盖的牢房。",
+    for s in ("在林晚眼前的是不知为何被白色油漆完全覆盖的牢房。",
               "著名作家写出了显著的成绩。",
               "颠覆常识的说法需要确凿证据，而不是随意揣测。"):
         assert c.clean_line(s).cleaned == s, s
     # 已知限制：极罕见的合法简体字（幺）在孤立句子里仍可能被删
-    assert "覆" in c.clean_line("在常榕眼前的是不知为何被白色油漆完全覆盖的牢房。").cleaned
+    assert "覆" in c.clean_line("在林晚眼前的是不知为何被白色油漆完全覆盖的牢房。").cleaned
 
 
 @pytest.mark.skipif(
@@ -196,10 +196,32 @@ def test_real_line_matches_polished_edition():
     from adclean.semantic import build_cleaner as bc
     c = bc()
     src = ("墙壁上镶嵌异的'显示奇屏突然亮起，一柳只玩偶般猫头鹰1出现在了屏幕e里r"
-           "侧，它就的~话语也暂时%让侕众箘人停止了对于常榕的讨论。")
+           "侧，它就的~话语也暂时%让侕众箘人停止了对于林晚的讨论。")
     out = c.clean_line(src).cleaned
     for junk in ("异", "'", "奇", "柳", "1", "e", "r", "~", "%", "侕", "箘"):
         assert junk not in out, (junk, out)
     assert "墙壁上镶嵌的显示屏突然亮起" in out
     assert "一只玩偶般猫头鹰出现在了屏幕里侧" in out
-    assert "的话语也暂时让众人停止了对于常榕的讨论。" in out
+    assert "的话语也暂时让众人停止了对于林晚的讨论。" in out
+
+
+def test_default_names_has_no_hardcoded_private_names():
+    """DEFAULT_NAMES 必须为空，不能硬编码私人测试人名。"""
+    from adclean.semantic import DEFAULT_NAMES
+    assert DEFAULT_NAMES == ()
+
+
+def test_long_line_skips_beam_decode(monkeypatch):
+    """n > cfg.max_line 超长行不得再执行整句束搜索 decode()。"""
+    lm = LanguageModel().fit(CLEAN * 30)
+    c = SemanticCleaner(lm, SemanticConfig(max_line=30, decoder="beam"))
+
+    def fail_decode(*a, **kw):
+        raise AssertionError("超长行不应该调用整句束搜索 decode()")
+
+    monkeypatch.setattr(c, "decode", fail_decode)
+    long_line = CLEAN[0] + "\u200b" + CLEAN[1]
+    assert len(long_line) > 30
+    r = c.clean_line(long_line)
+    assert "\u200b" not in r.cleaned
+

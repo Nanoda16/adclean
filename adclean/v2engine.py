@@ -12,65 +12,10 @@ import unicodedata
 from dataclasses import dataclass, field
 
 from . import charclass as cc
+from .patterns import (DEFAULT_PROTECTED, DECOR_SAFE, HOMO_ALL, STRONG_PAIR,
+                       _is_cjk_symbol, _is_decor_block, _is_kana,
+                       load_default_protected)
 from .v2lm import LanguageModel, BOS, EOS, UNSEEN_LOG
-
-HOMO_ALL = cc.DIGIT_HOMOPHONE_CHARS | {"〇"}
-
-# 正常创作里常见的装饰/标点：永不通过“结构异常”通道删除
-DECOR_SAFE = set(
-    "~～*＊-—–―−_＿/／|｜\\、。，．,．!！?？;；:：'\"‘’“”"
-    "()（）[]【】{}｛｝〈〉《》「」『』…⋯·・♪♫♬❤◎○●□■△▲▽▼☆★"
-) | {"\u3000", "\u00a0"}
-
-
-def _is_kana(ch: str) -> bool:
-    """日文假名（平假名/片假名/半角片假名）。正文里常出现，绝不单独删。"""
-    o = ord(ch)
-    return (0x3040 <= o <= 0x30FF) or (0x31F0 <= o <= 0x31FF) or (0xFF66 <= o <= 0xFF9D)
-
-
-def _is_decor_block(ch: str) -> bool:
-    """装饰性 Unicode 区块（制表符/方块/几何图形/箭头/数学符号等），不是广告。"""
-    o = ord(ch)
-    return (0x2500 <= o <= 0x257F or      # Box Drawing
-            0x2580 <= o <= 0x259F or      # Block Elements
-            0x25A0 <= o <= 0x25FF or      # Geometric Shapes
-            0x2190 <= o <= 0x21FF or      # Arrows
-            0x2200 <= o <= 0x22FF or      # Mathematical Operators
-            0x2600 <= o <= 0x27BF or      # Misc Symbols / Dingbats
-            0x2E00 <= o <= 0x2E7F or      # Supplemental Punctuation
-            0xFE30 <= o <= 0xFE4F or      # CJK Compatibility Forms
-            0xFF00 <= o <= 0xFFEF or      # Halfwidth/Fullwidth Forms
-            0x1F300 <= o <= 0x1FAFF)      # Emoji
-
-
-def _is_cjk_symbol(ch: str) -> bool:
-    """CJK 符号和标点区（U+3000–U+303F）里的非常规符号。"""
-    o = ord(ch)
-    return 0x3000 <= o <= 0x303F and ch not in DECOR_SAFE
-
-# 相邻字对“够强”的门槛：搭配次数达到此数即视为正常用字。
-STRONG_PAIR = 10
-
-# 默认保护字表（见 data/protected_chars.txt）
-_PROTECTED_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               'data', 'protected_chars.txt')
-
-
-def load_default_protected() -> frozenset:
-    out = set()
-    try:
-        with open(_PROTECTED_PATH, encoding='utf-8') as f:
-            for line in f:
-                s = line.strip()
-                if s and not s.startswith('#'):
-                    out.update(s)
-    except OSError:
-        pass
-    return frozenset(out)
-
-
-DEFAULT_PROTECTED = load_default_protected()
 
 
 @dataclass
@@ -520,7 +465,11 @@ class V2Engine:
                 ed = V2Edit(kind="delete", pos=j, origin=ch, delta=delta,
                             lang=gain, context=cfg.w_context * ctx,
                             pollution=poll[j], confidence=conf, reason=reason)
-                (edits if conf == "auto" else reviews).append(ed)
+                if conf == "auto":
+                    keep[j] = False
+                    edits.append(ed)
+                else:
+                    reviews.append(ed)
 
             # 3c) 聚集区整体判据：以段内垃圾字为锚点，向两侧吸收“弱附着”邻居成连续片段，
             #     整段试删、收益 >= cluster_gain 才删；与段内邻居强关联的真词会自动断开。
@@ -559,6 +508,7 @@ class V2Engine:
                 for g in sorted(grp):
                     if not keep[g]:
                         continue
+                    keep[g] = False
                     ed = V2Edit(kind="delete", pos=g, origin=chars[g],
                                 delta=gain / len(grp), lang=gain / len(grp),
                                 pollution=poll[g], confidence="auto",

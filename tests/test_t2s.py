@@ -139,3 +139,29 @@ def test_clean_book_is_barely_touched():
         idx = t.find(w)
         if idx >= 0:
             assert u[idx:idx + len(w)] == w, (w, u[idx:idx + len(w)])
+
+
+def test_t2s_cancel_check_and_tsv_crlf(tmp_path):
+    """cancel_check 触发应立即中止，且 TSV 读取容忍 CRLF 换行。"""
+    from adclean.pipeline import JobCancelledError
+    from adclean.t2s import _read_tsv
+
+    p = tmp_path / "sample.tsv"
+    p.write_bytes("舊\t旧\r\n測\t测\r\n".encode("utf-8"))
+    assert _read_tsv(str(p)) == {"舊": "旧", "測": "测"}
+
+    with pytest.raises(JobCancelledError):
+        to_simplified("這是一段繁體文本", cancel_check=lambda: True)
+
+
+def test_t2s_performance_on_multimegabyte_text():
+    """2~3MB 级文本转换性能回归（应在 1 秒内完成）。"""
+    import time
+    sample = ("這是一段包含繁體字和什麼那麽由於藉口的測試文本，用來測試繁簡轉換的性能與準確性。\n"
+              * 25000)  # ~2.88 MB UTF-8
+    t0 = time.perf_counter()
+    out = to_simplified(sample)
+    dt = time.perf_counter() - t0
+    assert "这是一段包含繁体字和什么那么由于借口的测试文本" in out
+    assert dt < 2.0, "2.9MB t2s 耗时过长: %.3fs" % dt
+

@@ -118,7 +118,7 @@ def item(i: int = 1) -> ReviewItem:
     return ReviewItem(
         item_id="b:L%d" % i, book_id="b", chapter_id="c",
         line_start=i, line_end=i, start=0, end=5, severity="HIGH",
-        context_before="", suspicious_text="她冲到常榕霖身前。", context_after="",
+        context_before="", suspicious_text="她冲到林晚霖身前。", context_after="",
         evidence=[{"type": "statistical_anomaly", "score": 3.0}],
         candidate_repairs=[CandidateRepair("candidate_1", [[4, 5]], -10.0, "霖"),
                            CandidateRepair("candidate_2", [], -30.0, "")])
@@ -364,12 +364,12 @@ def test_defaults_are_the_agreed_ones():
 
 # ------------------------------------------------- 与真实 pipeline 的集成
 CLEAN = [
-    "常榕叹了口气坐到沙发旁边的书桌前，同时取出放在抽屉里的代办清单列表。",
+    "林晚叹了口气坐到沙发旁边的书桌前，同时取出放在抽屉里的代办清单列表。",
     "这个房间里几天前发生过一场命案，而就在命案的前一天，自己在这里和被害人互相闲聊过。",
-    "她冲到常榕身前，张开双手试图护住常榕。",
-    "樱庭娜娜看到常榕之后先是怔了一下，接着立刻尴尬的想要转身离开。",
+    "她冲到林晚身前，张开双手试图护住林晚。",
+    "樱庭娜娜看到林晚之后先是怔了一下，接着立刻尴尬的想要转身离开。",
 ]
-POLLUTED = "常榕又思索片刻后一，将（裠鸠  霖瘤是 六霓吧2紦【更换七门锁）】仪直接划八掉。"
+POLLUTED = "林晚又思索片刻后一，将（裠鸠  霖瘤是 六霓吧2紦【更换七门锁）】仪直接划八掉。"
 
 
 @pytest.fixture(scope="module")
@@ -378,7 +378,7 @@ def tiny_engine():
     from adclean.v3engine import V3Config, V3Engine
     lm = LanguageModel().fit(CLEAN * 40)
     e = V3Engine(lm, V3Config())
-    e.cfg.whitelist_words = ("常榕", "樱庭娜娜")
+    e.cfg.whitelist_words = ("林晚", "樱庭娜娜")
     return e
 
 
@@ -470,3 +470,96 @@ def test_pipeline_llm_all_fail_keeps_text(fake, tiny_engine):
     # 全部失败 → 全部 uncertain → 输出必须与 V3 默认输出完全一致
     assert r.cleaned == base.cleaned
     assert not [e for e in r.change_log if e["method"] == "llm"]
+
+
+def test_resolver_accumulates_usage_and_round2_stats(fake, tiny_engine):
+    """真实累计响应 usage，且 Round 2 再次 prepare() 不会覆写 stats['total']。"""
+    class UsageFake(Fake):
+        pass
+
+    orig_do_post = Fake.do_POST
+
+    def post_with_usage(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(n) or b"{}"
+        # 注入 usage 响应
+        self._inject_usage = True
+        STATE["calls"] = STATE.get("calls", 0) + 1
+        try:
+            payload = json.loads(raw)
+        except ValueError:
+            payload = {}
+        STATE["last_payload"] = payload
+        if STATE.get("fail_first", 0) > 0:
+            STATE["fail_first"] -= 1
+            try:
+                self.send_response(429)
+                self.send_header("Retry-After", "0.05")
+                self.send_header("Content-Type", "application/json")
+                body = b'{"error":"rate"}'
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except OSError:
+                pass
+            return
+        self._send(200, {
+            "choices": [{"message": {"content": '{"decision":"keep","confidence":0.9}'}}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+        })
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), type("UF", (Fake,), {"do_POST": post_with_usage}))
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        base = "http://127.0.0.1:%d/v1" % srv.server_address[1]
+        STATE["fail_first"] = 1
+        res = OpenAICompatResolver(cfg_for(base, retries=1, concurrency=1))
+        st1 = res.prepare([item(1), item(2)])
+        assert st1["total"] == 2 and st1["ok"] == 2 and st1["retried"] == 1
+        assert res.usage == {"prompt_tokens": 200, "completion_tokens": 40, "total_tokens": 240}
+        # Round 2 再次 prepare，total 应累加到 3（不能覆写成 1 导致 ok=3 > total=1）
+        st2 = res.prepare([item(3)])
+        assert st2["total"] == 3 and st2["ok"] == 3
+        assert res.usage["total_tokens"] == 360
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_resolver_checkpoint_resume_and_corrupt_tail(fake, tmp_path):
+    """checkpoint_path JSONL 增量落盘，重启后自动跳过已完成项并容忍尾部残缺行。"""
+    cp = str(tmp_path / "ckpt.jsonl")
+    r1 = OpenAICompatResolver(cfg_for(fake, concurrency=1, checkpoint_path=cp))
+    r1.prepare([item(1), item(2)])
+    assert STATE["calls"] == 2
+    assert os.path.exists(cp)
+    # 模拟崩溃留下的半截 JSON 行
+    with open(cp, "a", encoding="utf-8") as fh:
+        fh.write('{"item_id": "broken"\n')
+
+    STATE["calls"] = 0
+    r2 = OpenAICompatResolver(cfg_for(fake, concurrency=1, checkpoint_path=cp))
+    st = r2.prepare([item(1), item(2), item(3)])
+    assert STATE["calls"] == 1, "已完成的两条应从 checkpoint 恢复，只请求第 3 条"
+    assert st["ok"] == 3
+
+
+def test_pipeline_max_llm_items_zero_not_capped_by_llm_config(fake, tiny_engine):
+    """PipelineConfig(max_llm_items=0) 必须覆盖 LLMConfig 默认 max_items=50，真正不限条数。"""
+    from adclean.audit import AuditConfig
+    from adclean.pipeline import PipelineConfig, run_book
+
+    # 造 55 条可疑行，超过默认 LLMConfig.max_items=50
+    lines = CLEAN + [POLLUTED] * 55
+    text = "\n".join(lines)
+    # 但每行需要唯一，避免相同行无问题；其实行号不同 item_id 就不同
+    cfg = PipelineConfig(llm_max_priority=3, max_llm_items=0, final_review_rounds=0)
+    cfg.audit = AuditConfig(merge_lines=False)
+    res = OpenAICompatResolver(cfg_for(fake, concurrency=4))  # 默认 max_items == 50
+    assert res.cfg.max_items == 50
+    out = run_book(text, tiny_engine, cfg, book_id="cap0", resolver=res)
+    assert res.stats["skipped"] == 0
+    assert res.stats["ok"] >= 55
+    assert out.report["llm_review"]["stats"]["skipped"] == 0
+

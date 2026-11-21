@@ -1,19 +1,23 @@
 # -*- coding: utf-8 -*-
-"""adclean.pipeline —— 主链路：V3 Auto Repair → Audit → Review Queue → LLM Review → Final Audit。
+"""adclean.pipeline —— 主链路：Auto Repair → Audit → Review Queue → LLM Review → Final Audit。
 
-约束：Audit 是只读旁路，永远不决定 V3 是否运行、也不决定 V3 能改哪些行。
+约束：Audit 是只读旁路，永远不决定主引擎是否运行、也不决定主引擎能改哪些行。
 """
 from __future__ import annotations
 
+import copy
+import inspect
 import json
 import os
 import sys
 import time
 from dataclasses import dataclass, field
 
+from .ads import ad_line_reason
 from .audit import (SEV_HIGH, SEV_LOW, SEV_MEDIUM, AuditConfig, AuditLayer,
                     strong_positions_of)
-from .processor import list_txt_files, newline_of, read_text
+from .patterns import JobCancelledError
+from .processor import list_txt_files, newline_of, read_text_info
 from .review import (DECISION_KEEP, DECISION_REPAIR, DECISION_UNCERTAIN,
                      CandidateRepair, NullResolver, ReviewItem, apply_decision,
                      build_prompt, parse_decision)
@@ -48,15 +52,29 @@ DEFAULT_NAMES: tuple[str, ...] = ()
 
 
 def build_engine(lm_path: str = "", names=DEFAULT_NAMES,
-                 overrides: dict | None = None, kind: str = "locate"):
+                 overrides: dict | None = None, kind: str = "locate",
+                 *, text: str = "", lines=None):
     """构造 Auto Repair 引擎。
 
-    kind="locate"（默认）：多特征字级定位器；kind="semantic"：句子级语义判据；
-    kind="v3"：旧字频引擎。三者接口一致（clean_line / clean_book / _line_score）。
+    当 ``lm_path`` 未提供或目标文件不存在时，绝不抛出 ``FileNotFoundError``：
+    若传入 ``text``/``lines`` 则立即用内存文本 ``LanguageModel.fit`` 构建；
+    否则返回待拟合占位模型（``_lm_mode = "auto_fit"``），由 ``run_book`` 按输入书自动构建。
     """
     from .v2lm import LanguageModel
     path = resolve_lm_path(lm_path)
-    lm = LanguageModel.load(path)
+    if path and os.path.exists(path):
+        lm = LanguageModel.load(path)
+        lm_mode = "file"
+    else:
+        path = ""
+        lm_mode = "auto_fit"
+        if lines is not None:
+            lm = LanguageModel().fit(list(lines))
+        elif text:
+            lm = LanguageModel().fit([text])
+        else:
+            lm = LanguageModel()
+
     if kind == "locate":
         from .locate import LocatorEngine
         eng = LocatorEngine(lm, lm_path=path, overrides=overrides)
@@ -65,6 +83,7 @@ def build_engine(lm_path: str = "", names=DEFAULT_NAMES,
         if overrides and "names" in overrides:
             eng.cfg.names = tuple(overrides["names"])
         eng._engine_kind = kind
+        eng._lm_mode = lm_mode
         return eng
     if kind == "v3":
         eng = V3Engine(lm)
@@ -82,6 +101,7 @@ def build_engine(lm_path: str = "", names=DEFAULT_NAMES,
     if kind != "v3" and overrides and "names" in overrides:
         eng.cfg.names = tuple(overrides["names"])
     eng._lm_path = path
+    eng._lm_mode = lm_mode
     eng._engine_kind = kind
     return eng
 
@@ -121,14 +141,17 @@ class PipelineConfig:
     common_char_freq: int = 2000
     # 引擎动过但外部独立证据少于这个数 → 弱支持
     weak_support_evidence: int = 2
-    max_llm_items: int = 0         # 0 = 不限
+    # None = 遵循 resolver.cfg.max_items；0 = 明确不限（覆盖 LLMConfig.max_items=50）；>0 = 明确上限
+    max_llm_items: int | None = None
     # --- §十二 Final Audit ---
     reaudit: bool = True
     final_review_rounds: int = 1   # Final Audit 之后**最多**再送审的轮数（有界）
     # --- 给 UI / 外部调用者的钩子 ---
     audit_progress: object = None  # callable(done_lines, total_lines)
     llm_progress: object = None    # callable(done, total, ok, fail)
-    cancel: object = None          # callable() -> bool，返回 True 则停止送审
+    cancel: object = None          # callable() -> bool（向后兼容旧名）
+    cancel_check: object = None    # callable() -> bool，返回 True 则抛出 JobCancelledError
+    names: tuple[str, ...] = ()    # 请求级人名/专名白名单（不改写共享引擎）
     # --- 其它 ---
     # 繁→简转换：默认开启（繁体字会被换成简体字，属于字形改写）。
     # 关闭它则保留原字形，但简繁混排的书容易把繁体正文当插入字误删。
@@ -203,21 +226,38 @@ def _only_removed(a: str, b: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 一、V3 主引擎（无门禁）
+# 一、Auto Repair 主引擎（无门禁）
 # ---------------------------------------------------------------------------
-def v3_auto_repair(engine, lines: list, progress=None) -> dict:
+def v3_auto_repair(engine, lines: list, progress=None, *,
+                   cancel_check=None, names=None) -> dict:
     """主引擎跑完整本书，逐行决策原样生效，不做任何门禁（§三）。
 
     返回 {行号: (frozenset(行内删除位置), margin)}，可直接喂给
     AuditLayer.scan_book(proposals=...)。
     """
+    if cancel_check is not None and cancel_check():
+        raise JobCancelledError("任务已取消")
     # 需要全书统计的引擎走整本接口
     if hasattr(engine, "clean_book"):
-        return engine.clean_book(lines, progress=progress)
+        cb_fn = engine.clean_book
+        try:
+            params = inspect.signature(cb_fn).parameters
+        except (TypeError, ValueError):
+            params = {}
+        kw = {}
+        if "progress" in params:
+            kw["progress"] = progress
+        if cancel_check is not None and "cancel_check" in params:
+            kw["cancel_check"] = cancel_check
+        if names is not None and "names" in params:
+            kw["names"] = names
+        return cb_fn(lines, **kw)
     out: dict = {}
     n = len(lines)
     step = max(1, n // 100)
     for i, line in enumerate(lines):
+        if cancel_check is not None and (i % 256 == 0) and cancel_check():
+            raise JobCancelledError("任务已取消")
         if line:
             r = engine.clean_line(line)
             if r.removed:
@@ -312,8 +352,14 @@ class PipelineResult:
     report: dict = field(default_factory=dict)
     seconds: float = 0.0
     llm_stats: dict = field(default_factory=dict)
-    # 只跑 V3（未应用 LLM 决策）的文本，用于对比与回滚（§十一）。
+    # 只跑 Auto Repair（未应用 LLM 决策）的文本，用于对比与回滚（§十一）。
     cleaned_v3: str = ""
+    lm_mode: str = "file"
+    llm_usage: dict = field(default_factory=lambda: {
+        "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+    })
+    edit_items: list = field(default_factory=list)
+    encoding_warning: str = ""
 
     def write_outputs(self, out_dir: str, basename: str,
                       newline: str = "\n") -> dict:
@@ -358,16 +404,18 @@ class PipelineResult:
 # ---------------------------------------------------------------------------
 # Review Queue 构造（§八）
 # ---------------------------------------------------------------------------
-def _priority_of(engine: V3Engine, orig_line: str, cur_line: str,
+def _priority_of(engine, orig_line: str, cur_line: str,
                  n_independent: int, cfg: PipelineConfig) -> int:
     """给一个"引擎动过"的区域定送审优先级（§九），只影响送审顺序。
 
-    1 = 删掉了常用字、删掉了语料里不存在的字、或把整行删掉一半以上；
+    1 = 引擎删掉了常用字、删掉了语料里不存在的字、或把整行删掉一半以上；
     2 = 引擎动过但外部独立证据不足；3 = 引擎动过且证据充分（只记录）。
     """
+    lm = getattr(engine, "lm", None)
+    uni = lm.uni if lm is not None else {}
     rm = _diff_removed(orig_line, cur_line)
     for j in sorted(rm):
-        f = engine.lm.uni.get(orig_line[j], 0)
+        f = uni.get(orig_line[j], 0)
         if f > cfg.common_char_freq or f == 0:
             return 1
     if len(rm) >= 8 and len(rm) * 2 >= max(1, len(orig_line)):
@@ -384,12 +432,12 @@ def _find_event(events: list, li: int):
     return None
 
 
-def _build_item(engine: V3Engine, ev, cur: list, offs: list, li: int,
+def _build_item(engine, ev, cur: list, offs: list, li: int,
                 cfg: PipelineConfig, orig_line: str) -> ReviewItem:
     """为一个异常区域中的某一行构造 ReviewItem（§八）。
 
-    Review Region 就是这一行的原文（suspicious_text 必须给原文），
-    default_text 是 V3 清洗后的默认结果；候选为 no_change / restore。
+    Review Region 就是当前基准行（第 1 轮为原文、第 2 轮为第 1 轮修改后的文本），
+    default_text 是当前默认结果；候选为 no_change / restore。
     """
     line = cur[li]
     acted = orig_line != line
@@ -450,33 +498,151 @@ def _new_structure(initial: list, final: list) -> int:
     return len(keys(final) - keys(initial))
 
 
+def _prepare_request_engine(engine, lines: list[str], eff_names: tuple[str, ...]):
+    """构造请求级隔离引擎视图并判定 lm_mode，绝不改写共享 engine/cfg。"""
+    lm_obj = getattr(engine, "lm", None)
+    needs_fit = (lm_obj is not None and getattr(lm_obj, "total", 0) == 0)
+    lm_mode = getattr(engine, "_lm_mode", "")
+    if needs_fit:
+        from .v2lm import LanguageModel
+        book_lm = LanguageModel().fit(lines)
+        lm_mode = "auto_fit"
+    else:
+        book_lm = lm_obj
+        if not lm_mode:
+            lm_mode = "file" if getattr(engine, "_lm_path", "") else "auto_fit"
+
+    # LocatorEngine：提供无状态 with_context，复用只读 Booster
+    if hasattr(engine, "with_context"):
+        cur_names = getattr(getattr(engine, "cfg", None), "names", ())
+        if needs_fit or (eff_names and eff_names != tuple(cur_names)):
+            req_eng = engine.with_context(
+                lm=book_lm if needs_fit else None,
+                names=eff_names if eff_names else tuple(cur_names),
+            )
+            req_eng._engine_kind = getattr(engine, "_engine_kind", "locate")
+            req_eng._lm_mode = lm_mode
+            return req_eng, lm_mode
+        return engine, lm_mode
+
+    # SemanticEngine / V3Engine：若需要拟合或覆盖白名单，构造浅隔离副本
+    if needs_fit and lm_obj is not None:
+        if hasattr(engine, "cleaner"):
+            from .semantic import SemanticEngine
+            cfg_cp = copy.copy(engine.cfg)
+            if eff_names:
+                cfg_cp.names = eff_names
+            req_eng = SemanticEngine(book_lm, cfg_cp)
+            req_eng._engine_kind = getattr(engine, "_engine_kind", "semantic")
+            req_eng._lm_mode = lm_mode
+            return req_eng, lm_mode
+        if isinstance(engine, V3Engine):
+            cfg_cp = copy.copy(engine.cfg)
+            if eff_names:
+                cfg_cp.whitelist_words = eff_names
+            req_eng = V3Engine(book_lm, cfg_cp)
+            req_eng._engine_kind = getattr(engine, "_engine_kind", "v3")
+            req_eng._lm_mode = lm_mode
+            return req_eng, lm_mode
+
+    if eff_names and hasattr(engine, "cfg"):
+        req_eng = copy.copy(engine)
+        cfg_cp = copy.copy(engine.cfg)
+        if hasattr(cfg_cp, "names"):
+            cfg_cp.names = eff_names
+        if hasattr(cfg_cp, "whitelist_words"):
+            cfg_cp.whitelist_words = eff_names
+        req_eng.cfg = cfg_cp
+        if hasattr(req_eng, "cleaner"):
+            cl_cp = copy.copy(req_eng.cleaner)
+            cl_cp.cfg = cfg_cp
+            req_eng.cleaner = cl_cp
+        return req_eng, lm_mode
+
+    return engine, lm_mode
+
+
+def _call_prepare(resolver, items: list, progress, max_llm_items: int | None):
+    """调用 resolver.prepare，兼容带/不带 max_items 关键字的自定义 resolver。"""
+    fn = resolver.prepare
+    kw = {"progress": progress}
+    if max_llm_items is not None:
+        try:
+            params = inspect.signature(fn).parameters
+            if "max_items" in params:
+                kw["max_items"] = int(max_llm_items)
+        except (TypeError, ValueError):
+            pass
+    return fn(items, **kw)
+
+
+def _norm_source(eng_kind: str) -> str:
+    if eng_kind == "locate":
+        return "locator"
+    if eng_kind in ("locator", "v3", "semantic", "ads", "llm"):
+        return eng_kind
+    return "locator"
+
+
+def _extract_llm_usage(resolver, llm_stats: dict) -> dict[str, int]:
+    u = getattr(resolver, "usage", None)
+    if isinstance(u, dict):
+        pt = int(u.get("prompt_tokens") or 0)
+        ct = int(u.get("completion_tokens") or 0)
+        tt = int(u.get("total_tokens") or 0)
+    else:
+        pt = int((llm_stats or {}).get("prompt_tokens") or 0)
+        ct = int((llm_stats or {}).get("completion_tokens") or 0)
+        tt = int((llm_stats or {}).get("total_tokens") or 0)
+    if tt == 0 and (pt or ct):
+        tt = pt + ct
+    return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt}
+
+
 # ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
-def run_book(text: str, engine: V3Engine, cfg: PipelineConfig | None = None,
-             book_id: str = "", resolver=None, prompt_sink: list | None = None
-             ) -> PipelineResult:
+def run_book(text: str, engine, cfg: PipelineConfig | None = None,
+             book_id: str = "", resolver=None, prompt_sink: list | None = None,
+             *, cancel_check=None, names=None) -> PipelineResult:
     """单本书的全链路处理。text 应已是目标字形（如需繁→简请先转换）。"""
     cfg = cfg or PipelineConfig()
     resolver = resolver or NullResolver()
-    t0 = time.time()
-    res = PipelineResult(book_id=book_id, cleaned=text)
+    eff_cancel = cancel_check or getattr(cfg, "cancel_check", None) or getattr(cfg, "cancel", None)
 
+    def _check_cancel() -> None:
+        if eff_cancel is not None and eff_cancel():
+            raise JobCancelledError("任务已取消")
+
+    _check_cancel()
+    t0 = time.time()
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     orig_offs = _offsets(lines)
+    eff_names = tuple(names) if names is not None else tuple(getattr(cfg, "names", ()) or ())
+    req_engine, lm_mode = _prepare_request_engine(engine, lines, eff_names)
+
+    res = PipelineResult(book_id=book_id, cleaned=text, lm_mode=lm_mode)
 
     # ================================================================
-    # 一、V3 Auto Repair —— 主引擎，无门禁（§三）
+    # 一、Auto Repair —— 主引擎，无门禁（§三）
     # ================================================================
-    v3 = v3_auto_repair(engine, lines, progress=cfg.audit_progress or None)
+    v3 = v3_auto_repair(
+        req_engine, lines,
+        progress=cfg.audit_progress or None,
+        cancel_check=eff_cancel,
+        names=eff_names or None,
+    )
+    _check_cancel()
     cur = [lines[i] if i not in v3 else _remove(lines[i], v3[i][0])
            for i in range(len(lines))]
+    v3_cur = list(cur)
 
     # ================================================================
-    # 二、Audit —— 只读旁路，复用 V3 决策保证对齐（§三：不参与门控）
+    # 二、Audit —— 只读旁路，复用引擎决策保证对齐（§三：不参与门控）
     # ================================================================
-    layer = AuditLayer(engine, cfg.audit)
-    events = layer.scan_book(text, book_id, proposals=v3)
+    layer = AuditLayer(req_engine, cfg.audit)
+    events = layer.scan_book(text, book_id, proposals=v3, cancel_check=eff_cancel)
+    _check_cancel()
     res.audit_events = events
     for ev in events:
         acted = any(li in v3 for li in range(ev.line_start - 1, ev.line_end))
@@ -487,6 +653,10 @@ def run_book(text: str, engine: V3Engine, cfg: PipelineConfig | None = None,
     change_log: list = []
     auto_lines = 0
     auto_chars = 0
+    eng_kind = getattr(req_engine, "_engine_kind", getattr(engine, "_engine_kind", "locate"))
+    auto_source = _norm_source(eng_kind)
+    auto_edit_by_line: dict[int, dict] = {}
+
     for li in sorted(v3):
         rm = v3[li][0]
         if not rm:
@@ -494,16 +664,46 @@ def run_book(text: str, engine: V3Engine, cfg: PipelineConfig | None = None,
         auto_lines += 1
         auto_chars += len(rm)
         ev = _find_event(events, li)
+        orig_ln = lines[li]
+        after_ln = cur[li]
+        ad_reason = ad_line_reason(orig_ln) if len(rm) >= len(orig_ln) else None
+        is_whole = (len(rm) >= len(orig_ln)) and (after_ln == "")
+        item_source = "ads" if ad_reason else auto_source
+        item_kind = "ad_line" if is_whole else "auto_delete"
+        if ad_reason:
+            item_reason = "整行广告规则：%s" % ad_reason
+            item_conf = 0.99
+        elif is_whole:
+            item_reason = "结构性广告整行清除"
+            item_conf = 0.96
+        else:
+            item_reason = "自动定位器删除 %d 字" % len(rm)
+            item_conf = round(min(0.99, max(0.55, 0.72 + float(v3[li][1]) / 30.0)), 3)
+
+        ed_item = {
+            "line_no": li + 1,
+            "kind": item_kind,
+            "source": item_source,
+            "reason": item_reason,
+            "confidence": item_conf,
+            "before": orig_ln,
+            "after": after_ln,
+            "context_prev": lines[max(0, li - 2):li],
+            "context_next": lines[li + 1:li + 3],
+            "default_accepted": True,
+        }
+        auto_edit_by_line[li] = ed_item
+
         change_log.append({
             "location": {"chapter": ev.chapter_id if ev else "全文",
                          "line": li + 1, "start": orig_offs[li],
-                         "end": orig_offs[li] + len(lines[li])},
-            "original": lines[li],
+                         "end": orig_offs[li] + len(orig_ln)},
+            "original": orig_ln,
             "replacement": "",
-            "deleted": "".join(lines[li][j] for j in sorted(rm)),
-            "result_text": cur[li],
+            "deleted": "".join(orig_ln[j] for j in sorted(rm)),
+            "result_text": after_ln,
             "method": "rule_engine",
-            "engine": getattr(engine, "_engine_kind", "locate"),
+            "engine": eng_kind,
             "margin": round(v3[li][1], 3),
             "evidence": [e.as_dict() for e in ev.evidence][:8] if ev else [],
             "severity": ev.severity if ev else "",
@@ -524,36 +724,37 @@ def run_book(text: str, engine: V3Engine, cfg: PipelineConfig | None = None,
         for li in range(ev.line_start - 1, ev.line_end):
             if li in queued_lines or not cur[li]:
                 continue
-            queue.append(_build_item(engine, ev, cur, offs, li, cfg, lines[li]))
+            queue.append(_build_item(req_engine, ev, cur, offs, li, cfg, lines[li]))
             queued_lines.add(li)
         ev.llm_review = True
     # 同优先级内按异常分数降序：截断时先送最可疑的，而不是行号最小的。
     queue.sort(key=lambda it: (it.priority, -it.anomaly_score, it.line_start))
     to_send = [it for it in queue if it.priority <= cfg.llm_max_priority]
-    if cfg.max_llm_items:
+    if cfg.max_llm_items is not None and cfg.max_llm_items > 0:
         to_send = to_send[:cfg.max_llm_items]
 
     # ================================================================
     # 四、LLM Review（§七/§十/§十一）
     # ================================================================
-    res.cleaned_v3 = "\n".join(cur)      # V3-only 文本（回滚基线）
+    res.cleaned_v3 = "\n".join(v3_cur)      # Auto-only 文本（回滚基线）
     if to_send and hasattr(resolver, "prepare"):
         try:
-            st = resolver.prepare(to_send, progress=cfg.llm_progress)
+            st = _call_prepare(resolver, to_send, cfg.llm_progress, cfg.max_llm_items)
             if isinstance(st, dict):
                 res.llm_stats = st
         except Exception as e:                              # noqa: BLE001
             res.llm_stats = {"prepare_error": str(e)[:300]}
+    _check_cancel()
 
     llm_lines = llm_chars = llm_added = 0
     kept = uncertain = rejected = 0
     applied_ids: set = set()
+    llm_edit_items: list[dict] = []
+    is_null_resolver = isinstance(resolver, NullResolver) or getattr(resolver, "name", "") == "null"
 
-    def _apply_item(item: ReviewItem, round_no: int) -> None:
+    def _apply_item(item: ReviewItem, round_no: int, sent_to_llm: bool) -> None:
         nonlocal llm_lines, llm_chars, llm_added, kept, uncertain, rejected
-        if cfg.cancel is not None and cfg.cancel():
-            uncertain += 1
-            return
+        _check_cancel()
         if prompt_sink is not None:
             prompt_sink.append({"item_id": item.item_id,
                                 "prompt_version": "review-v2",
@@ -570,6 +771,9 @@ def run_book(text: str, engine: V3Engine, cfg: PipelineConfig | None = None,
         li = item.line_start - 1
         before = cur[li]
         new_text, cid, note = apply_decision(item, decision)
+        ctx_prev = lines[max(0, li - 2):li]
+        ctx_next = lines[li + 1:li + 3]
+
         if item.decision == DECISION_REPAIR and new_text is not None \
                 and new_text != before:
             _same, ins, dele = _diff_ops(before, new_text)
@@ -580,6 +784,34 @@ def run_book(text: str, engine: V3Engine, cfg: PipelineConfig | None = None,
             llm_chars += len(dele)
             llm_added += len(ins)
             applied_ids.add(item.item_id)
+            if cid == "restore" and li in auto_edit_by_line and new_text == lines[li]:
+                # LLM 撤销了自动删除 → 取消对应 auto_delete 的默认采纳并记录 llm_keep
+                auto_edit_by_line[li]["default_accepted"] = False
+                llm_edit_items.append({
+                    "line_no": li + 1,
+                    "kind": "llm_keep",
+                    "source": "llm",
+                    "reason": item.reason or "LLM 判定保留原文（撤销自动删除）",
+                    "confidence": float(item.confidence or 0.0),
+                    "before": lines[li],
+                    "after": lines[li],
+                    "context_prev": ctx_prev,
+                    "context_next": ctx_next,
+                    "default_accepted": False,
+                })
+            else:
+                llm_edit_items.append({
+                    "line_no": li + 1,
+                    "kind": "llm_delete",
+                    "source": "llm",
+                    "reason": item.reason or ("LLM 建议修改（%s）" % (cid or "repair")),
+                    "confidence": float(item.confidence or 0.0),
+                    "before": before,
+                    "after": new_text,
+                    "context_prev": ctx_prev,
+                    "context_next": ctx_next,
+                    "default_accepted": True,
+                })
             change_log.append({
                 "location": {"chapter": item.chapter_id, "line": li + 1,
                              "start": item.start, "end": item.end},
@@ -609,10 +841,49 @@ def run_book(text: str, engine: V3Engine, cfg: PipelineConfig | None = None,
         elif item.decision == DECISION_KEEP:
             kept += 1
             item.resolved_text = before
+            if sent_to_llm and not is_null_resolver:
+                llm_edit_items.append({
+                    "line_no": li + 1,
+                    "kind": "llm_keep",
+                    "source": "llm",
+                    "reason": item.reason or "LLM 判定无需继续修改",
+                    "confidence": float(item.confidence or 0.0),
+                    "before": before,
+                    "after": before,
+                    "context_prev": ctx_prev,
+                    "context_next": ctx_next,
+                    "default_accepted": False,
+                })
         elif item.decision == DECISION_UNCERTAIN:
             uncertain += 1
+            if sent_to_llm and not is_null_resolver:
+                llm_edit_items.append({
+                    "line_no": li + 1,
+                    "kind": "uncertain",
+                    "source": "llm",
+                    "reason": item.reason or "LLM 不确定，保留待人工复核",
+                    "confidence": float(item.confidence or 0.0),
+                    "before": before,
+                    "after": before,
+                    "context_prev": ctx_prev,
+                    "context_next": ctx_next,
+                    "default_accepted": False,
+                })
         else:
             rejected += 1
+            if sent_to_llm and not is_null_resolver:
+                llm_edit_items.append({
+                    "line_no": li + 1,
+                    "kind": "uncertain",
+                    "source": "llm",
+                    "reason": note or item.reason or "LLM 提案被安全策略拒绝",
+                    "confidence": float(item.confidence or 0.0),
+                    "before": before,
+                    "after": before,
+                    "context_prev": ctx_prev,
+                    "context_next": ctx_next,
+                    "default_accepted": False,
+                })
             change_log.append({
                 "location": {"chapter": item.chapter_id, "line": li + 1,
                              "start": item.start, "end": item.end},
@@ -629,7 +900,7 @@ def run_book(text: str, engine: V3Engine, cfg: PipelineConfig | None = None,
             })
 
     for item in to_send:
-        _apply_item(item, 1)
+        _apply_item(item, 1, sent_to_llm=True)
 
     # ================================================================
     # 五、Final Audit（§十二）+ 有界复审（最多 1 轮）
@@ -638,18 +909,22 @@ def run_book(text: str, engine: V3Engine, cfg: PipelineConfig | None = None,
     rounds = 0
     final_round_items = 0
     if cfg.reaudit:
+        _check_cancel()
         rounds = 1
         res.cleaned = "\n".join(cur)
         # 主引擎一个字都没删、也没有任何 LLM 决策改动正文时，cur 与原文完全一致，
         # 此时终审那次引擎重跑必然给出与 v3 相同的结果，直接复用即可省一遍全量定位。
-        fin = v3 if (not v3 and llm_lines == 0) else v3_auto_repair(engine, cur)
-        layer_f = AuditLayer(engine, cfg.audit)
-        res.final_events = layer_f.scan_book(res.cleaned, book_id,
-                                             proposals=fin)
+        fin = v3 if (not v3 and llm_lines == 0) else v3_auto_repair(
+            req_engine, cur, cancel_check=eff_cancel, names=eff_names or None)
+        layer_f = AuditLayer(req_engine, cfg.audit)
+        res.final_events = layer_f.scan_book(
+            res.cleaned, book_id, proposals=fin, cancel_check=eff_cancel)
 
         if cfg.final_review_rounds > 0:
+            _check_cancel()
             # ReviewItem.line_start 是 1-based 行号，转换为 0-based 行下标再与 li 对比
             decided = {it.line_start - 1 for it in queue if it.decision}
+            cur_offs = _offsets(cur)
             cand_items: list = []
             seen2: set = set()
             for ev in res.final_events:
@@ -659,31 +934,36 @@ def run_book(text: str, engine: V3Engine, cfg: PipelineConfig | None = None,
                     if li in seen2 or not cur[li] or li in decided:
                         continue
                     seen2.add(li)
-                    it = _build_item(engine, ev, cur, orig_offs, li, cfg, lines[li])
+                    # 第 2 轮事件来自 cur 上的扫描，必须以 cur 和 cur_offs 作为坐标系基准
+                    it = _build_item(req_engine, ev, cur, cur_offs, li, cfg, cur[li])
                     if it.priority <= cfg.llm_max_priority:
                         cand_items.append(it)
-            if cand_items and cfg.max_llm_items:
+            if cand_items and cfg.max_llm_items is not None and cfg.max_llm_items > 0:
                 cand_items = cand_items[:cfg.max_llm_items]
             if cand_items:
                 if hasattr(resolver, "prepare"):
                     try:
-                        resolver.prepare(cand_items, progress=cfg.llm_progress)
+                        st2 = _call_prepare(resolver, cand_items, cfg.llm_progress, cfg.max_llm_items)
+                        if isinstance(st2, dict):
+                            res.llm_stats = st2
                     except Exception:                        # noqa: BLE001
                         pass
                 applied_before = llm_lines
                 for it in cand_items:
                     queue.append(it)
-                    _apply_item(it, 2)
+                    _apply_item(it, 2, sent_to_llm=True)
                 final_round_items = len(cand_items)
                 rounds += 1
-                # 只有真改动了正文才需要再跑一遍引擎和终审扫描：没有改动时
-                # cur 与上面那次完全相同，重跑必然得到同样的结果，白花时间。
+                # 只有真改动了正文才需要再跑一遍引擎和终审扫描
                 if llm_lines > applied_before:
                     res.cleaned = "\n".join(cur)
-                    fin = v3_auto_repair(engine, cur)
-                    layer_f = AuditLayer(engine, cfg.audit)
-                    res.final_events = layer_f.scan_book(res.cleaned, book_id,
-                                                         proposals=fin)
+                    fin = v3_auto_repair(
+                        req_engine, cur, cancel_check=eff_cancel,
+                        names=eff_names or None)
+                    layer_f = AuditLayer(req_engine, cfg.audit)
+                    res.final_events = layer_f.scan_book(
+                        res.cleaned, book_id, proposals=fin,
+                        cancel_check=eff_cancel)
 
     # ================================================================
     # 六、统计与报告（§十四/§十五 E）
@@ -691,6 +971,12 @@ def run_book(text: str, engine: V3Engine, cfg: PipelineConfig | None = None,
     res.cleaned = "\n".join(cur)
     res.review_queue = queue
     res.change_log = change_log
+    res.llm_usage = _extract_llm_usage(resolver, res.llm_stats)
+
+    combined_edits = list(auto_edit_by_line.values()) + llm_edit_items
+    combined_edits.sort(key=lambda x: x["line_no"])
+    res.edit_items = combined_edits
+
     fh = layer_f.stats(res.final_events) if cfg.reaudit else {}
     oh = layer.stats(events)
     res.seconds = round(time.time() - t0, 2)
@@ -706,11 +992,12 @@ def run_book(text: str, engine: V3Engine, cfg: PipelineConfig | None = None,
     by_prio: dict = {}
     for it in queue:
         by_prio[it.priority] = by_prio.get(it.priority, 0) + 1
-    eng_kind = getattr(engine, "_engine_kind", "locate")
+    lm_label = os.path.basename(getattr(req_engine, "_lm_path", "") or "") or lm_mode
     res.report = {
         "book_id": book_id,
         "engine": "%s_auto_repair + audit + llm_review + final_audit" % eng_kind,
-        "lm": os.path.basename(getattr(engine, "_lm_path", "") or ""),
+        "lm": lm_label,
+        "lm_mode": lm_mode,
         "chars_total": len(text),
         "chars_final": len(res.cleaned),
         "lines_total": len(lines),
@@ -739,7 +1026,8 @@ def run_book(text: str, engine: V3Engine, cfg: PipelineConfig | None = None,
                        "uncertain": uncertain, "rejected": rejected,
                        "by_priority": by_prio,
                        "resolver": getattr(resolver, "name", "unknown"),
-                       "stats": res.llm_stats},
+                       "stats": res.llm_stats,
+                       "usage": res.llm_usage},
         "audit": {
             "events_initial": oh["events"],
             "events_final": fh.get("events", 0),
@@ -765,10 +1053,11 @@ def run_book(text: str, engine: V3Engine, cfg: PipelineConfig | None = None,
 
 
 # ---------------------------------------------------------------------------
-def run_files(inputs: list, out_dir: str, engine: V3Engine,
+def run_files(inputs: list, out_dir: str, engine,
               cfg: PipelineConfig | None = None, resolver=None,
               progress=None) -> list:
     cfg = cfg or PipelineConfig()
+    eff_cancel = getattr(cfg, "cancel_check", None) or getattr(cfg, "cancel", None)
     files = []
     for it in inputs:
         if os.path.isdir(it):
@@ -777,36 +1066,43 @@ def run_files(inputs: list, out_dir: str, engine: V3Engine,
             files.append(it)
     out: list = []
     for i, p in enumerate(files):
+        if eff_cancel is not None and eff_cancel():
+            raise JobCancelledError("任务已取消")
         if progress:
             progress(i, len(files), os.path.basename(p))
         try:
-            text, _enc = read_text(p)
+            text, enc, enc_warn = read_text_info(p)
         except OSError as e:
             out.append({"src": p, "error": str(e)})
             continue
         nl = newline_of(text)
         if cfg.simplify:
             from .t2s import to_simplified
-            text = to_simplified(text)
+            text = to_simplified(text, cancel_check=eff_cancel)
         prompts: list = []
         r = run_book(text, engine, cfg, book_id=os.path.basename(p),
-                     resolver=resolver, prompt_sink=prompts)
+                     resolver=resolver, prompt_sink=prompts,
+                     cancel_check=eff_cancel)
+        r.encoding_warning = enc_warn
+        if enc_warn:
+            r.report["encoding"] = enc
+            r.report["encoding_warning"] = enc_warn
         paths = r.write_outputs(out_dir, os.path.basename(p), nl)
         out.append({"src": p, **paths, "report": r.report,
+                    "encoding": enc, "encoding_warning": enc_warn,
                     "prompts": prompts, "result": r})
     return out
 
 
 def main(argv=None) -> int:
     import argparse
-    import sys
     p = argparse.ArgumentParser(
         prog="adclean.pipeline",
-        description="V3 Auto Repair → Review Queue → LLM → Final Audit"
+        description="Auto Repair → Review Queue → LLM → Final Audit"
                     "（原文件永不修改）")
     p.add_argument("inputs", nargs="+")
     p.add_argument("-o", "--out", default="cleaned_audit")
-    p.add_argument("--lm", default="", help="clean n-gram 缓存路径")
+    p.add_argument("--lm", default="", help="clean n-gram 缓存路径（缺省或不存在时自动内存构建）")
     p.add_argument("--audit-min-conf", type=float, default=AuditConfig.min_conf)
     p.add_argument("--llm-max-priority", type=int, default=2,
                    help="送审优先级上限（1=引擎删了常用字 2=证据不足 3=只记录）")
@@ -838,7 +1134,7 @@ def main(argv=None) -> int:
                    help="定位器：边界回撤阈值（默认 0.5；0=关闭）")
     args = p.parse_args(argv)
 
-    names = tuple(x for x in (args.names or "").split(",") if x)
+    names = tuple(x for x in (args.names or "").replace("，", ",").split(",") if x.strip())
     overrides = {}
     if args.cost_scale:
         overrides["cost_scale"] = args.cost_scale
@@ -849,7 +1145,8 @@ def main(argv=None) -> int:
     if args.trim >= 0:
         overrides["trim"] = args.trim
     engine = build_engine(args.lm, names, overrides=overrides, kind=args.engine)
-    sys.stderr.write("engine: %s   n-gram: %s\n" % (args.engine, engine._lm_path))
+    lm_desc = engine._lm_path or "auto_fit(按输入文本内存自建)"
+    sys.stderr.write("engine: %s   n-gram: %s\n" % (args.engine, lm_desc))
     if args.engine == "v3":
         sys.stderr.write("frozen v3 config: %s\n"
                          % ", ".join("%s=%s" % (k, getattr(engine.cfg, k))
@@ -857,7 +1154,7 @@ def main(argv=None) -> int:
                                                "candidate_mode", "max_rounds")))
     elif args.engine == "locate":
         sys.stderr.write(
-            "v1 判据: 40 维局部搭配 + 跨书负例模型（只删不改）｜"
+            "locate 判据: 25/36/38 维原生 LightGBM 模型（只删不改）｜"
             "上下文异常数 ±%d≥%d｜边界回撤 %.2f\n"
             % (engine.loc.near_w, engine.loc.near_k, engine.loc.trim))
     else:

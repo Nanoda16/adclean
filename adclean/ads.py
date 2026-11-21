@@ -13,29 +13,62 @@ from __future__ import annotations
 
 import re
 
+from . import charclass as cc
+from .patterns import DOMAIN_PATTERN, DOMAIN_RE, TAG_LINE_RE, URL_ONLY_RE
+
 # ---------------------------------------------------------------- 域名
-_DOMAIN = (r"(?:[A-Za-z0-9](?:[A-Za-z0-9\-]{0,30}[A-Za-z0-9])?\.)"
-           r"(?:com|net|cc|org|cn|top|xyz|vip|info|me|tv|app|site|club|online|"
-           r"la|io|co|us|biz|pro)(?![A-Za-z])")
+_DOMAIN = DOMAIN_PATTERN
 
 # ---------------------------------------------------------------- 正则规则
 # (规则名, 正则, 行长度上限)
 RULES: list[tuple[str, re.Pattern, int | None]] = [
-    ("HTML/标签行", re.compile(
-        r"^\s*(?:</?(?:img|p|div|span|br|a|font|table|tr|td)\b"
-        r"|<\s*Book\b|\{[^}]{0,40}\"book_id\"\s*:)", re.I), None),
-    ("URL 行", re.compile(r"^\s*(?:https?://|www\.)\S*\s*$", re.I), None),
+    ("HTML/标签行", TAG_LINE_RE, None),
+    ("URL 行", URL_ONLY_RE, None),
     ("上传者水印", re.compile(
         r"本文件由会员|由会员.{0,30}上传|资源来源于网络|仅供学习交流|"
-        r"本书由.{0,20}(?:整理|制作|上传)|扫校|OCR"), 200),
+        r"本书由.{0,20}(?:整理|制作|上传|扫校)|扫校|OCR"), 200),
     ("网址栏", re.compile(r"(?:备用)?网址\s*[:：]|备用域名\s*[:：]"), 200),
     ("群号行", re.compile(
         r"(?:QQ|qq|企鹅|书友|交流|读者|粉丝)\s*群\s*[:：]?\s*\d{5,}"
         r"|群号\s*[:：]?\s*\d{5,}"), 200),
     ("本章完", re.compile(
         r"^\s*[（(【\[]?\s*本章完\s*[）)】\]]?\s*[!！。.~～…]*\s*$"), 20),
-    ("含域名短行", re.compile(_DOMAIN), 60),
+    ("含域名短行", DOMAIN_RE, 60),
 ]
+
+# 匹配整行水印/群号/网址后用于残余正文保护的广告套话片段
+_WATERMARK_FRAG = re.compile(
+    r"本文件由会员|由会员.{0,30}上传|资源来源于网络|仅供学习交流|仅作学习交流(?:使用)?|"
+    r"本书由.{0,20}(?:整理|制作|上传|扫校)|(?:整理|制作|上传|扫校)|OCR|"
+    r"上传时间\s*[:：]?\s*[\d\-: ]+|请勿用于商业用途|版权归原作者(?:所有)?|如有侵权请?联系删除"
+)
+_QQ_FRAG = re.compile(
+    r"(?:QQ|qq|企鹅|书友|交流|读者|粉丝)\s*群\s*[:：]?\s*\d{5,}|"
+    r"群号\s*[:：]?\s*\d{5,}|"
+    r"欢迎(?:大家)?加入|点击加入|(?:书友|交流|读者|粉丝|官方)群"
+)
+_URL_FRAG = re.compile(
+    r"(?:备用)?网址\s*[:：]|备用域名\s*[:：]|https?://\S+|www\.\S+|" + _DOMAIN,
+    re.I,
+)
+_DIALOGUE_QUOTES = set("“”‘’「」『』")
+
+
+def _has_residual_prose(s: str, rule_name: str) -> bool:
+    """剔除命中广告片段与常见广告套话后，判断是否仍残留真实正文（防止误杀剧情句）。"""
+    rem = s
+    if rule_name in ("上传者水印", "网址栏", "群号行"):
+        rem = _WATERMARK_FRAG.sub("", rem)
+        rem = _URL_FRAG.sub("", rem)
+        rem = _QQ_FRAG.sub("", rem)
+    # 统计剩余非空汉字正文数
+    rem_cjk = sum(1 for ch in rem if cc.is_cjk(ch))
+    if rem_cjk >= 8:
+        return True
+    # 若剔除命中广告片段后仍含典型中文对话引号且有一定汉字正文，视为剧情对白
+    if rem_cjk >= 4 and any(ch in _DIALOGUE_QUOTES for ch in rem):
+        return True
+    return False
 
 # 去掉这些之后还有多少"非广告"残留 —— 残留超限就不算广告行
 _PUNCT = re.compile(r"[\s、，。！？~～…,.!?;；:：()（）\[\]【】《》\"'“”‘’<>/\\|@#$%^&*+=—\-_·]+")
@@ -93,6 +126,8 @@ def ad_line_reason(line: str) -> str | None:
                 return name
             continue
         if rx.search(s):
+            if name in ("上传者水印", "网址栏", "群号行") and _has_residual_prose(s, name):
+                continue
             return name
     if _is_poll_line(s):
         return "章尾求票"

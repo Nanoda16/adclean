@@ -5,6 +5,7 @@ api_key 不写日志、不出现在异常文本里；`as_public_dict()` 只返�
 """
 from __future__ import annotations
 
+import email.utils
 import json
 import os
 import re
@@ -15,6 +16,7 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 
 from .review import DECISION_UNCERTAIN, build_prompt, parse_decision
 
@@ -24,6 +26,8 @@ DEFAULT_RETRIES = 2
 DEFAULT_CONCURRENCY = 2
 DEFAULT_MAX_ITEMS = 50
 RETRY_BACKOFF = (1.0, 2.0, 4.0)      # 秒，按重试次数取
+_MAX_RETRY_AFTER = 60.0
+
 
 def config_path() -> str:
     """配置文件路径（每次调用都读环境变量 `ADCLEAN_HOME`）。"""
@@ -38,9 +42,11 @@ CONFIG_PATH = config_path()
 class LLMError(Exception):
     """面向使用者的错误（消息里绝不含 api_key）。"""
 
-    def __init__(self, message: str, *, retryable: bool = True):
+    def __init__(self, message: str, *, retryable: bool = True,
+                 retry_after: float | None = None):
         super().__init__(message)
         self.retryable = retryable
+        self.retry_after = retry_after
 
 
 # ---------------------------------------------------------------- 配置
@@ -58,6 +64,7 @@ class LLMConfig:
     json_mode: bool = True
     save_key: bool = True
     extra_headers: dict = field(default_factory=dict)
+    checkpoint_path: str = ""
 
     # -- 端点归一化 -------------------------------------------------
     def _base(self) -> str:
@@ -132,6 +139,7 @@ class LLMConfig:
         self.max_items = max(0, int(self.max_items))       # 0 = 不限
         self.temperature = max(0.0, min(2.0, float(self.temperature or 0.0)))
         self.max_tokens = max(64, min(8192, int(self.max_tokens or 700)))
+        self.checkpoint_path = str(self.checkpoint_path or "").strip()
         return self
 
 
@@ -168,9 +176,32 @@ def save_config(cfg: LLMConfig, path: str = "") -> str:
 
 
 # ---------------------------------------------------------------- HTTP
-def _request(url: str, cfg: LLMConfig, payload=None, method: str | None = None,
-             timeout: float | None = None) -> tuple:
-    """发一次请求，返回 (status, text)。不重试——重试由上层控制。"""
+def _parse_retry_after(val: str | None) -> float | None:
+    if not val:
+        return None
+    s = str(val).strip()
+    if not s:
+        return None
+    try:
+        sec = float(s)
+        return max(0.0, min(_MAX_RETRY_AFTER, sec))
+    except ValueError:
+        pass
+    try:
+        dt = email.utils.parsedate_to_datetime(s)
+        if dt is not None:
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            delta = (dt - datetime.now(timezone.utc)).total_seconds()
+            return max(0.0, min(_MAX_RETRY_AFTER, delta))
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def _request_full(url: str, cfg: LLMConfig, payload=None, method: str | None = None,
+                  timeout: float | None = None) -> tuple[int, dict[str, str], str]:
+    """发一次请求，返回 (status, headers_lower, text)。"""
     data = None
     if method is None:
         method = "POST" if payload is not None else "GET"
@@ -188,14 +219,16 @@ def _request(url: str, cfg: LLMConfig, payload=None, method: str | None = None,
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout or cfg.timeout) as r:
-            return r.status, r.read().decode("utf-8", "replace")
+            hdrs = {str(k).lower(): str(v) for k, v in r.headers.items()} if r.headers else {}
+            return r.status, hdrs, r.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         body = ""
         try:
             body = e.read().decode("utf-8", "replace")
         except (OSError, ValueError):
             pass
-        return e.code, body
+        hdrs = {str(k).lower(): str(v) for k, v in e.headers.items()} if e.headers else {}
+        return e.code, hdrs, body
     except urllib.error.URLError as e:
         reason = getattr(e, "reason", e)
         if isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
@@ -203,6 +236,14 @@ def _request(url: str, cfg: LLMConfig, payload=None, method: str | None = None,
         raise LLMError("无法连接：%s" % cfg.redact(str(reason)), retryable=True)
     except TimeoutError:
         raise LLMError("请求超时（%.0fs）" % (timeout or cfg.timeout), retryable=True)
+
+
+def _request(url: str, cfg: LLMConfig, payload=None, method: str | None = None,
+             timeout: float | None = None) -> tuple:
+    """发一次请求，返回 (status, text)。不重试——重试由上层控制。"""
+    status, _hdrs, text = _request_full(url, cfg, payload=payload,
+                                        method=method, timeout=timeout)
+    return status, text
 
 
 def _brief(body: str, limit: int = 300) -> str:
@@ -213,9 +254,11 @@ def _brief(body: str, limit: int = 300) -> str:
 _RETRY_STATUS = (408, 409, 425, 429, 500, 502, 503, 504)
 
 
-def _http_error(status: int, body: str, cfg: LLMConfig) -> LLMError:
+def _http_error(status: int, body: str, cfg: LLMConfig,
+                headers: dict[str, str] | None = None) -> LLMError:
     msg = cfg.redact(_brief(body))
     retryable = status in _RETRY_STATUS
+    ra = _parse_retry_after((headers or {}).get("retry-after"))
     if status == 401:
         return LLMError("401 未授权：API Key 无效或已过期。%s" % msg, retryable=False)
     if status == 403:
@@ -224,14 +267,39 @@ def _http_error(status: int, body: str, cfg: LLMConfig) -> LLMError:
         return LLMError("404 找不到接口：API 地址可能不对（%s）。%s"
                         % (cfg.redact(cfg.chat_url()), msg), retryable=False)
     if status == 429:
-        return LLMError("429 触发限流：请降低并发或稍后重试。%s" % msg, retryable=True)
-    return LLMError("HTTP %d：%s" % (status, msg), retryable=retryable)
+        return LLMError("429 触发限流：请降低并发或稍后重试。%s" % msg,
+                        retryable=True, retry_after=ra)
+    return LLMError("HTTP %d：%s" % (status, msg), retryable=retryable, retry_after=ra)
 
 
-def _with_retry(cfg: LLMConfig, fn, on_retry=None):
-    """按 cfg.retries 次指数退避重试。仅对可重试瞬态错误（如 429/5xx/超时）重试。"""
+def _sleep_cancelable(sec: float, cancel=None) -> None:
+    if sec <= 0:
+        return
+    if cancel is None:
+        time.sleep(sec)
+        return
+    deadline = time.monotonic() + sec
+    while True:
+        if cancel():
+            return
+        rem = deadline - time.monotonic()
+        if rem <= 0:
+            return
+        time.sleep(min(0.1, rem))
+
+
+def _with_retry(cfg: LLMConfig, fn, on_retry=None,
+                backoff_state: list | None = None, cancel=None):
+    """按 cfg.retries 次指数退避重试。支持 Retry-After 与多线程共享退避时间戳。"""
     last = None
     for attempt in range(cfg.retries + 1):
+        if backoff_state is not None:
+            lock, _until = backoff_state
+            with lock:
+                until = backoff_state[1]
+            now = time.monotonic()
+            if until > now:
+                _sleep_cancelable(until - now, cancel)
         try:
             return fn()
         except LLMError as e:
@@ -239,9 +307,17 @@ def _with_retry(cfg: LLMConfig, fn, on_retry=None):
             if not getattr(e, "retryable", True) or attempt >= cfg.retries:
                 break
             wait = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
+            if e.retry_after is not None:
+                wait = max(wait, float(e.retry_after))
+            if backoff_state is not None:
+                lock, _until = backoff_state
+                with lock:
+                    target = time.monotonic() + wait
+                    if target > backoff_state[1]:
+                        backoff_state[1] = target
             if on_retry:
                 on_retry(attempt + 1, wait, str(e))
-            time.sleep(wait)
+            _sleep_cancelable(wait, cancel)
     raise last
 
 
@@ -252,9 +328,9 @@ def list_models(cfg: LLMConfig) -> list:
     url = cfg.models_url()
 
     def call():
-        status, body = _request(url, cfg)
+        status, hdrs, body = _request_full(url, cfg)
         if status >= 400:
-            raise _http_error(status, body, cfg)
+            raise _http_error(status, body, cfg, hdrs)
         try:
             data = json.loads(body)
         except ValueError:
@@ -276,9 +352,23 @@ def list_models(cfg: LLMConfig) -> list:
 
 
 # ---------------------------------------------------------------- 单次对话
-def chat(cfg: LLMConfig, messages: list, json_mode: bool | None = None,
-         max_tokens: int | None = None) -> str:
-    """POST /chat/completions，返回 assistant 文本。含重试与 json 模式降级。"""
+def _extract_usage(data: dict) -> dict[str, int]:
+    raw = data.get("usage") if isinstance(data, dict) else None
+    if not isinstance(raw, dict):
+        return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    pt = int(raw.get("prompt_tokens") or 0)
+    ct = int(raw.get("completion_tokens") or 0)
+    tt = int(raw.get("total_tokens") or 0)
+    if tt == 0 and (pt or ct):
+        tt = pt + ct
+    return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt}
+
+
+def chat_with_usage(cfg: LLMConfig, messages: list, json_mode: bool | None = None,
+                    max_tokens: int | None = None, *,
+                    backoff_state: list | None = None,
+                    cancel=None) -> tuple[str, dict[str, int], int]:
+    """POST /chat/completions，返回 (assistant 文本, usage 字典, 重试次数)。"""
     cfg = cfg.clamp()
     url = cfg.chat_url()
     use_json = cfg.json_mode if json_mode is None else json_mode
@@ -294,15 +384,20 @@ def chat(cfg: LLMConfig, messages: list, json_mode: bool | None = None,
     if use_json:
         payload["response_format"] = {"type": "json_object"}
 
+    retries_used = [0]
+
+    def on_retry(_attempt, _wait, _msg):
+        retries_used[0] += 1
+
     def call():
-        status, body = _request(url, cfg, payload)
+        status, hdrs, body = _request_full(url, cfg, payload)
         if status >= 400:
             # 部分服务不支持 response_format → 去掉再试一次
             if "response_format" in payload and status in (400, 404, 422):
                 payload.pop("response_format", None)
-                status, body = _request(url, cfg, payload)
+                status, hdrs, body = _request_full(url, cfg, payload)
             if status >= 400:
-                raise _http_error(status, body, cfg)
+                raise _http_error(status, body, cfg, hdrs)
         try:
             data = json.loads(body)
         except ValueError:
@@ -318,9 +413,26 @@ def chat(cfg: LLMConfig, messages: list, json_mode: bool | None = None,
         if isinstance(content, list):        # 少数服务返回分片数组
             content = "".join(str(c.get("text", "")) if isinstance(c, dict)
                               else str(c) for c in content)
-        return str(content)
+        return str(content), _extract_usage(data)
 
-    return _with_retry(cfg, call)
+    try:
+        content, usage = _with_retry(cfg, call, on_retry=on_retry,
+                                     backoff_state=backoff_state, cancel=cancel)
+    except LLMError as e:
+        e._retries_used = retries_used[0]  # type: ignore[attr-defined]
+        raise
+    return content, usage, retries_used[0]
+
+
+def chat(cfg: LLMConfig, messages: list, json_mode: bool | None = None,
+         max_tokens: int | None = None) -> str:
+    """POST /chat/completions，返回 assistant 文本。含重试与 json 模式降级。"""
+    content, _usage, _retried = chat_with_usage(
+        cfg, messages, json_mode=json_mode, max_tokens=max_tokens)
+    return content
+
+
+_DEFAULT_CHAT = chat
 
 
 def probe_chat(cfg: LLMConfig) -> dict:
@@ -348,57 +460,151 @@ class OpenAICompatResolver:
         self.decisions: dict = {}
         self.progress = progress          # callable(done, total, ok, fail)
         self.cancel = cancel              # callable() -> bool
-        self.stats = {"total": 0, "ok": 0, "fail": 0, "skipped": 0, "retried": 0}
+        self.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        self.stats = {
+            "total": 0,
+            "ok": 0,
+            "fail": 0,
+            "skipped": 0,
+            "retried": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
         self.errors: list = []
         self._lock = threading.Lock()
+        self._backoff_state: list = [threading.Lock(), 0.0]
+        self._checkpoint_ids: set[str] = set()
+        self._load_checkpoint()
+
+    def _load_checkpoint(self) -> None:
+        cp = self.cfg.checkpoint_path
+        if not cp or not os.path.exists(cp):
+            return
+        try:
+            with open(cp, encoding="utf-8") as fh:
+                for line in fh:
+                    s = line.strip()
+                    if not s:
+                        continue
+                    try:
+                        rec = json.loads(s)
+                    except ValueError:
+                        continue
+                    if not isinstance(rec, dict):
+                        continue
+                    iid = rec.get("item_id")
+                    dec = rec.get("decision")
+                    if iid and isinstance(dec, dict):
+                        self.decisions[str(iid)] = dec
+                        self._checkpoint_ids.add(str(iid))
+                        u = rec.get("usage")
+                        if isinstance(u, dict):
+                            self._add_usage_locked(u)
+        except OSError:
+            pass
+
+    def _append_checkpoint_locked(self, item_id: str, dec: dict, usage: dict) -> None:
+        cp = self.cfg.checkpoint_path
+        if not cp:
+            return
+        d = os.path.dirname(cp)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        line = json.dumps(
+            {"item_id": item_id, "decision": dec, "usage": usage},
+            ensure_ascii=False,
+        )
+        with open(cp, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+            fh.flush()
+
+    def _add_usage_locked(self, u: dict) -> None:
+        for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            val = int(u.get(k) or 0)
+            self.usage[k] += val
+            self.stats[k] += val
 
     # -- 批量预解析 --------------------------------------------------
-    def prepare(self, items: list, progress=None) -> dict:
-        cap = self.cfg.max_items
-        todo = items if not cap else items[:cap]
-        self.stats["total"] = len(items)
-        self.stats["skipped"] = len(items) - len(todo)
+    def prepare(self, items: list, progress=None, *,
+                max_items: int | None = None) -> dict:
+        cap = self.cfg.max_items if max_items is None else max(0, int(max_items))
+        todo = items if cap == 0 else items[:cap]
+        self.stats["total"] += len(items)
+        self.stats["skipped"] += len(items) - len(todo)
         done = 0
         cb = progress or self.progress
-        with ThreadPoolExecutor(max_workers=self.cfg.concurrency) as ex:
-            futs = {ex.submit(self._one, it): it for it in todo}
-            for fut in as_completed(futs):
-                it = futs[fut]
-                try:
-                    dec = fut.result()
-                    with self._lock:
-                        self.decisions[it.item_id] = dec
-                        self.stats["ok"] += 1
-                except Exception as e:                      # noqa: BLE001
-                    msg = self.cfg.redact(str(e))
-                    with self._lock:
-                        # 失败条目 → uncertain（保持原文，绝不猜）
-                        self.decisions[it.item_id] = {
-                            "decision": DECISION_UNCERTAIN, "confidence": 0.0,
-                            "reason": "调用失败：%s" % msg}
-                        self.stats["fail"] += 1
-                        if len(self.errors) < 30:
-                            self.errors.append({"item_id": it.item_id,
-                                                "error": msg})
+
+        pending = []
+        for it in todo:
+            if it.item_id in self._checkpoint_ids and it.item_id in self.decisions:
+                with self._lock:
+                    self.stats["ok"] += 1
                 done += 1
                 if cb:
                     try:
                         cb(done, len(todo), self.stats["ok"], self.stats["fail"])
                     except Exception:                        # noqa: BLE001
                         pass
+            else:
+                pending.append(it)
+
+        if pending:
+            with ThreadPoolExecutor(max_workers=self.cfg.concurrency) as ex:
+                futs = {ex.submit(self._one, it): it for it in pending}
+                for fut in as_completed(futs):
+                    it = futs[fut]
+                    try:
+                        dec, u, n_retry, cancelled = fut.result()
+                        with self._lock:
+                            self.decisions[it.item_id] = dec
+                            self.stats["ok"] += 1
+                            self.stats["retried"] += n_retry
+                            self._add_usage_locked(u)
+                            if not cancelled:
+                                self._append_checkpoint_locked(it.item_id, dec, u)
+                    except Exception as e:                  # noqa: BLE001
+                        msg = self.cfg.redact(str(e))
+                        n_retry = int(getattr(e, "_retries_used", 0) or 0)
+                        with self._lock:
+                            # 失败条目 → uncertain（保持原文，绝不猜）
+                            self.decisions[it.item_id] = {
+                                "decision": DECISION_UNCERTAIN, "confidence": 0.0,
+                                "reason": "调用失败：%s" % msg}
+                            self.stats["fail"] += 1
+                            self.stats["retried"] += n_retry
+                            if len(self.errors) < 30:
+                                self.errors.append({"item_id": it.item_id,
+                                                    "error": msg})
+                    done += 1
+                    if cb:
+                        try:
+                            cb(done, len(todo), self.stats["ok"], self.stats["fail"])
+                        except Exception:                    # noqa: BLE001
+                            pass
         return dict(self.stats)
 
-    def _one(self, item) -> dict:
+    def _one(self, item) -> tuple[dict, dict[str, int], int, bool]:
         if self.cancel and self.cancel():
-            return {"decision": DECISION_UNCERTAIN, "confidence": 0.0,
-                    "reason": "已取消"}
+            return ({"decision": DECISION_UNCERTAIN, "confidence": 0.0,
+                     "reason": "已取消"},
+                    {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                    0, True)
         prompt = build_prompt(item)
-        raw = chat(self.cfg, [
+        msgs = [
             {"role": "system",
              "content": "你是中文小说文本校对助手。严格按要求只输出 JSON。"},
             {"role": "user", "content": prompt},
-        ])
-        return parse_decision(raw)
+        ]
+        if chat is _DEFAULT_CHAT:
+            raw, u, n_retry = chat_with_usage(
+                self.cfg, msgs, backoff_state=self._backoff_state,
+                cancel=self.cancel)
+        else:
+            raw = chat(self.cfg, msgs)
+            u = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+            n_retry = 0
+        return parse_decision(raw), u, n_retry, False
 
     # -- 协议方法 ----------------------------------------------------
     def review(self, item) -> dict:
@@ -417,6 +623,10 @@ class OpenAICompatResolver:
         return self.cfg.model
 
     def as_dict(self) -> dict:
+        try:
+            url = self.cfg.redact(self.cfg.chat_url())
+        except LLMError:
+            url = ""
         return {"resolver": self.name, "model": self.cfg.model,
-                "chat_url": self.cfg.redact(self.cfg.chat_url()),
-                **self.stats, "errors": self.errors[:10]}
+                "chat_url": url, **self.stats,
+                "usage": dict(self.usage), "errors": self.errors[:10]}

@@ -16,17 +16,11 @@ from dataclasses import dataclass, field
 
 from . import charclass as cc
 from .ads import ad_line_reason
+from .patterns import STRUCT_TAG_OR_URL_RE as _TAG_RE
+from .patterns import URL_ONLY_RE as _URL_ONLY_RE
 from .v2lm import BOS, EOS, LanguageModel
 
-DEFAULT_NAMES = ("常榕", "艾玛", "黑部奈叶香", "樱羽艾玛")
-
-# 结构性广告：整行匹配则整行删
-import re
-
-_TAG_RE = re.compile(
-    r'^\s*(?:</?(?:img|p|div|span|br|a|font)\b|https?://|www\.|'
-    r'<\s*Book\b|\{[^}]*"book_id"\s*:)', re.I)
-_URL_ONLY_RE = re.compile(r'^\s*(?:https?://|www\.)\S+\s*$', re.I)
+DEFAULT_NAMES: tuple[str, ...] = ()
 
 
 @dataclass
@@ -83,7 +77,6 @@ class SemanticCleaner:
         self.lm = lm
         self.cfg = cfg or SemanticConfig()
         self._penalty = self._deletion_penalty()
-        self._protect = self._build_protect()
 
     # ---- 每删一字的代价（插入先验 + 广告似然比） -------------------------
     def _deletion_penalty(self) -> float:
@@ -91,10 +84,6 @@ class SemanticCleaner:
         p = min(max(self.cfg.insert_prior, 1e-6), 1 - 1e-6)
         base = -self.cfg.junk_logp - math.log(p / (1.0 - p))
         return self.cfg.cost_scale * base
-
-    def _build_protect(self) -> list[bool]:
-        """返回保护名列表。"""
-        return list(self.cfg.names or ())
 
     # ---- 确定性规则（不是字频） -----------------------------------------
     def _is_invisible(self, ch: str) -> bool:
@@ -276,15 +265,15 @@ class SemanticCleaner:
                 if self._is_invisible(ch):
                     forced.add(i)
 
-        # 2) 其余位置：整句语义解码
-        dec = self.decode_rounds if cfg.decoder == "rounds" else self.decode
+        # 2) 其余位置：超长行改用局部多轮解码，避免整句束搜索退化
         if n > cfg.max_line:
             body = [c for i, c in enumerate(chars) if i not in forced]
             idx = [i for i in range(n) if i not in forced]
             mask = self._protect_mask(body)
-            _s, rem = dec(body, mask)
+            _s, rem = self.decode_rounds(body, mask, rounds=cfg.rounds)
             removed = tuple(sorted(forced | {idx[j] for j in rem}))
         else:
+            dec = self.decode_rounds if cfg.decoder == "rounds" else self.decode
             mask = self._protect_mask(chars)
             _s, rem = dec(chars, mask)
             removed = tuple(sorted(set(rem) | forced))

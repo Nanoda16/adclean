@@ -90,6 +90,31 @@ class TestProcessor(unittest.TestCase):
         finally:
             os.unlink(p)
 
+    def test_read_text_utf16_no_bom_and_replace_warning(self):
+        import tempfile
+        import warnings
+        from adclean.processor import read_text_info
+        with tempfile.NamedTemporaryFile("wb", suffix=".txt", delete=False) as f:
+            f.write("这是无BOM的UTF16文本。\n第二行内容。".encode("utf-16-le"))
+            p1 = f.name
+        with tempfile.NamedTemporaryFile("wb", suffix=".txt", delete=False) as f:
+            # 构造非合法 UTF-8/GB18030/Big5 的损坏字节序列触发 replace 告警
+            f.write(b"\xff\xff\xff\xff\xff")
+            p2 = f.name
+        try:
+            t1, enc1, warn1 = read_text_info(p1)
+            self.assertEqual(enc1, "utf-16-le")
+            self.assertEqual(warn1, "")
+            self.assertIn("无BOM的UTF16", t1)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                _t2, _enc2, warn2 = read_text_info(p2)
+                self.assertTrue(warn2)
+                self.assertTrue(caught)
+        finally:
+            os.unlink(p1)
+            os.unlink(p2)
+
 
 class TestEngine(unittest.TestCase):
     @classmethod
@@ -187,6 +212,27 @@ class TestEngine(unittest.TestCase):
     def test_no_edit_on_empty(self):
         r = self.clean("")
         self.assertEqual(r.cleaned, "")
+
+    def test_l2_suspect_block_records_edits(self):
+        """V1 L2 删除结构异常字符必须记入 edits，避免 clean_text 静默无效。"""
+        from adclean import clean_text
+        r = self.clean("𝔥𐍅")
+        self.assertEqual(r.cleaned, "")
+        self.assertTrue(r.changed)
+        self.assertTrue(r.edits)
+        tr = clean_text("𝔥𐍅\n正常。", self.m, self.cfg)
+        self.assertEqual(tr.cleaned, "\n正常。")
+        self.assertEqual(tr.removed_chars, 2)
+
+    def test_v2engine_no_duplicate_edits(self):
+        """V2 引擎 3b 与 3c 阶段绝不能对同一字符下标重复产出 edit。"""
+        from adclean.v2engine import V2Config, V2Engine
+        from adclean.v2lm import LanguageModel
+        lm = LanguageModel().fit(["他抬起头看着窗外的风景，心里想着事情。" for _ in range(50)])
+        v2 = V2Engine(lm, V2Config())
+        r = v2.clean_line("他抬起头看着窗翏锍帬外的风景。")
+        positions = [e.pos for e in r.edits]
+        self.assertEqual(len(positions), len(set(positions)), positions)
 
 
 if __name__ == "__main__":

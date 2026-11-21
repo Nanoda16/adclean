@@ -15,6 +15,17 @@ import os
 import sys
 
 
+def _configure_stdio() -> None:
+    """确保 Windows 管道模式下 stdout/stderr 不会因非 GBK 字符抛 UnicodeEncodeError。"""
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        if stream is not None and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:                                    # noqa: BLE001
+                pass
+
+
 def _looks_like_gui(argv: list) -> bool:
     if not argv:
         return True
@@ -26,6 +37,7 @@ def _looks_like_gui(argv: list) -> bool:
 
 
 def main(argv=None) -> int:
+    _configure_stdio()
     argv = list(sys.argv[1:] if argv is None else argv)
     if _looks_like_gui(argv):
         from .gui import main as gui_main

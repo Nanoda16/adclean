@@ -6,6 +6,7 @@ import json
 import os
 import re
 import time
+import warnings
 from dataclasses import dataclass, field, asdict
 
 from .engine import Model, Config, clean_text, TextResult
@@ -27,6 +28,8 @@ class FileReport:
     seconds: float = 0.0
     samples: list = field(default_factory=list)
     error: str = ""
+    encoding: str = ""
+    encoding_warning: str = ""
 
     def as_dict(self) -> dict:
         d = asdict(self)
@@ -34,20 +37,62 @@ class FileReport:
         return d
 
 
-def read_text(path: str) -> tuple[str, str]:
-    """读取文本，返回 (内容, 编码)。"""
+def _detect_utf16_no_bom(raw: bytes) -> str | None:
+    """启发式探测无 BOM 的 UTF-16LE / UTF-16BE（仅在含空字节且长度为偶数时尝试）。"""
+    n = len(raw)
+    if n < 4 or n % 2 != 0:
+        return None
+    sample = raw[:4096]
+    if b"\x00" not in sample:
+        return None
+    even_zeros = sum(1 for i in range(0, len(sample), 2) if sample[i] == 0)
+    odd_zeros = sum(1 for i in range(1, len(sample), 2) if sample[i] == 0)
+    half = len(sample) // 2
+    if odd_zeros >= half * 0.25 and even_zeros <= half * 0.1:
+        return "utf-16-le"
+    if even_zeros >= half * 0.25 and odd_zeros <= half * 0.1:
+        return "utf-16-be"
+    return None
+
+
+def read_text_info(path: str) -> tuple[str, str, str]:
+    """读取文本，返回 (内容, 编码, 编码告警)。"""
     with open(path, "rb") as fh:
         raw = fh.read()
     if raw.startswith(b"\xef\xbb\xbf"):
-        return raw[3:].decode("utf-8", errors="replace"), "utf-8-sig"
+        try:
+            return raw[3:].decode("utf-8"), "utf-8-sig", ""
+        except UnicodeDecodeError:
+            warn = "UTF-8 BOM 文件存在损坏字节，已使用替换符恢复（可能存在损字）"
+            warnings.warn(warn, UnicodeWarning, stacklevel=2)
+            return raw[3:].decode("utf-8", errors="replace"), "utf-8-sig", warn
     if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
-        return raw.decode("utf-16", errors="replace"), "utf-16"
+        try:
+            return raw.decode("utf-16"), "utf-16", ""
+        except UnicodeDecodeError:
+            warn = "UTF-16 文件存在损坏字节，已使用替换符恢复（可能存在损字）"
+            warnings.warn(warn, UnicodeWarning, stacklevel=2)
+            return raw.decode("utf-16", errors="replace"), "utf-16", warn
+    u16_enc = _detect_utf16_no_bom(raw)
+    if u16_enc:
+        try:
+            return raw.decode(u16_enc), u16_enc, ""
+        except UnicodeDecodeError:
+            pass
     for enc in ("utf-8", "gb18030", "big5"):
         try:
-            return raw.decode(enc), enc
+            return raw.decode(enc), enc, ""
         except UnicodeDecodeError:
             continue
-    return raw.decode("utf-8", errors="replace"), "utf-8"
+    warn = "文件编码未能无损识别，已以 UTF-8 替换模式读取（可能存在损字）"
+    warnings.warn(warn, UnicodeWarning, stacklevel=2)
+    return raw.decode("utf-8", errors="replace"), "utf-8", warn
+
+
+def read_text(path: str) -> tuple[str, str]:
+    """读取文本，返回 (内容, 编码)。"""
+    text, enc, _warn = read_text_info(path)
+    return text, enc
 
 
 def newline_of(text: str) -> str:
@@ -97,12 +142,11 @@ def _count_left(text: str, model: Model):
     from . import charclass as cc
     exotic = len(_EXOTIC.findall(text))
     others = 0
+    rare = 0
     for ch in text:
         if cc.in_suspect_block(ch):
             others += 1
-    rare = 0
-    for ch in text:
-        if cc.is_cjk(ch) and model.is_rare(ch):
+        elif cc.is_cjk(ch) and model.is_rare(ch):
             rare += 1
     return rare, exotic + others
 
@@ -121,11 +165,13 @@ def process_files(files: list[str], out_dir: str, cfg: Config | None = None,
         rep = FileReport(src=src)
         rep.size_bytes = os.path.getsize(src)
         try:
-            text, enc = read_text(src)
+            text, enc, enc_warn = read_text_info(src)
         except OSError as e:
             rep.error = str(e)
             reports.append(rep)
             continue
+        rep.encoding = enc
+        rep.encoding_warning = enc_warn
         nl = newline_of(text)
         t0 = time.time()
         if progress:

@@ -41,7 +41,6 @@ class Model:
         self.name_chars: set = set()
         self.char_files: dict[str, set] = {}
         self.n_files = 0
-        self.min_cooccur = 10
         self.contaminated_lines = 0
         self._score: dict[str, float] = {}
 
@@ -307,10 +306,10 @@ _SUSPECT_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069
 # 用于识别繁体正文段落的常用繁体字
 TRADITIONAL_ONLY = set(
     "們個來這說時會後對麼為國學實體發開關進過還遠邊點電頭顯風飛馬鳥魚龍"
-    "沒無與將張強當稱種經給紅結線繪續繼續緣級紀約紙級終組細織綠緩編練縣縮"
-    "兒內兩劍動務勝勢區協單賣買貴費資質賞購賽貝賬貸購員問間聞閉閒鬧陽陰陳陸"
-    "際隨險隱雖雙難雲霧靈靜韓順須預領顆題願類顧顯風飛飯飲飼餓館駐駕騎驚體鮮"
-    "韓響頁頂項順須頌預領頭顆題顏願顧顯風飛"
+    "沒無與將張強當稱種經給紅結線繪續繼續緣級紀約紙終組細織綠緩編練縣縮"
+    "兒內兩劍動務勝勢區協單賣買貴費資質賞購賽貝賬貸員問間聞閉閒鬧陽陰陳陸"
+    "際隨險隱雖雙難雲霧靈靜韓順須預領顆題願類顧飯飲飼餓館駐駕騎驚鮮"
+    "響頁頂項頌顏"
 )
 
 
@@ -514,7 +513,15 @@ def clean_line(line: str, model: Model, cfg: Config) -> LineResult:
 
     # ---- L2 结构异常字符（数学字母/卢恩/哥特/切罗基等）：无条件删除 ----
     if cfg.drop_unusual_blocks:
-        chars = [ch for ch in chars if not cc.in_suspect_block(ch)]
+        buf2 = []
+        for ch in chars:
+            if cc.in_suspect_block(ch):
+                edits.append(Edit(-1, -1, ch, 99.0, "suspect_block"))
+            else:
+                buf2.append(ch)
+        chars = buf2
+        if not chars:
+            return LineResult(line, "", edits)
 
     # ---- L3+ 策略分派 ----
     if cfg.aggressive:
@@ -633,16 +640,6 @@ def _clean_conservative(chars: list, model: Model, cfg: Config,
                 steps += 1
 
     # ---- L5 残留清洗 ----
-    near_deleted = [False] * n
-    for i in range(n):
-        if keep[i]:
-            continue
-        for d in (-1, 1):
-            t = i + d
-            while 0 <= t < n and not keep[t]:
-                t += d
-            if 0 <= t < n:
-                near_deleted[t] = True
     for _ in range(cfg.max_edits_per_line):
         victim = None
         best_gain = None
@@ -673,6 +670,7 @@ def _clean_conservative(chars: list, model: Model, cfg: Config,
         if victim is None:
             break
         keep[victim] = False
+        edits.append(Edit(victim, victim + 1, chars[victim], best_gain or 0.0, "cleanup"))
 
     return [c for c, k in zip(chars, keep) if k]
 

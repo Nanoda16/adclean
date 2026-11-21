@@ -21,22 +21,22 @@ from adclean.v2lm import LanguageModel
 from adclean.v3engine import V3Config, V3Engine
 
 CLEAN = [
-    "常榕叹了口气坐到沙发旁边的书桌前，同时取出放在抽屉里的代办清单列表。",
+    "林晚叹了口气坐到沙发旁边的书桌前，同时取出放在抽屉里的代办清单列表。",
     "这个房间里几天前发生过一场命案，而就在命案的前一天，自己在这里和被害人互相闲聊过。",
-    "她冲到常榕身前，张开双手试图护住常榕。",
-    "樱庭娜娜看到常榕之后先是怔了一下，接着立刻尴尬的想要转身离开。",
-    "常榕冷静就算再怎么迟钝也能意识到了，眼前这个伪人感十足的怪物。",
-    "不光是大小姐，常榕光是在旁边听二人的对话都快要听力竭了。",
+    "她冲到林晚身前，张开双手试图护住林晚。",
+    "樱庭娜娜看到林晚之后先是怔了一下，接着立刻尴尬的想要转身离开。",
+    "林晚冷静就算再怎么迟钝也能意识到了，眼前这个伪人感十足的怪物。",
+    "不光是大小姐，林晚光是在旁边听二人的对话都快要听力竭了。",
     "但是一群人不知道为什么全都异口同声，而亚里沙自己也是跟喝多了似的。",
 ]
-POLLUTED = "常榕又思索片刻后一，将（裠鸠  霖瘤是 六霓吧2紦【更换七门锁）】仪直接划八掉。"
+POLLUTED = "林晚又思索片刻后一，将（裠鸠  霖瘤是 六霓吧2紦【更换七门锁）】仪直接划八掉。"
 
 
 @pytest.fixture(scope="module")
 def engine():
     lm = LanguageModel().fit(CLEAN * 40)
     eng = V3Engine(lm, V3Config())
-    eng.cfg.whitelist_words = ("常榕", "樱庭娜娜", "亚里沙")
+    eng.cfg.whitelist_words = ("林晚", "樱庭娜娜", "亚里沙")
     return eng
 
 
@@ -342,7 +342,7 @@ def _item():
     return ReviewItem(
         item_id="b:L1", book_id="b", chapter_id="c",
         line_start=1, line_end=1, start=0, end=9,
-        severity=SEV_HIGH, context_before="", suspicious_text="她冲到常榕霖身前。",
+        severity=SEV_HIGH, context_before="", suspicious_text="她冲到林晚霖身前。",
         context_after="",
         evidence=[{"type": "statistical_anomaly", "score": 3.0}],
         candidate_repairs=[
@@ -369,10 +369,10 @@ def test_parse_decision_robustness():
 def test_render_and_apply():
     it = _item()
     assert render_region(it.suspicious_text, it.start, it.candidate_repairs[0]) \
-        == "她冲到常榕身前。"
+        == "她冲到林晚身前。"
     txt, cid, _ = apply_decision(it, {"decision": "repair",
                                       "selected_candidate": "candidate_1"})
-    assert txt == "她冲到常榕身前。" and cid == "candidate_1"
+    assert txt == "她冲到林晚身前。" and cid == "candidate_1"
     txt, _cid, note = apply_decision(it, {"decision": "repair",
                                           "selected_candidate": "nope"})
     assert txt is None and "无效" in note
@@ -385,7 +385,7 @@ def test_render_and_apply():
 def test_prompt_contains_candidates():
     p = build_prompt(_item())
     assert "candidate_1" in p and "candidate_2" in p
-    assert "她冲到常榕霖身前。" in p
+    assert "她冲到林晚霖身前。" in p
     assert "JSON" in p
 
 
@@ -436,7 +436,7 @@ def test_pipeline_end_to_end(engine, tmp_path):
         "污染行必须被自动修复或进入队列"
     assert rp["auto_repair"]["chars"] > 0, "小语料下污染行应能被自动修复"
     assert "裠" not in res.cleaned, "自动修复应删掉广告字"
-    assert "常榕" in res.cleaned, "白名单人名必须保留"
+    assert "林晚" in res.cleaned, "白名单人名必须保留"
     # changelog 每条都有可审计字段
     for e in res.change_log:
         assert e["method"] in ("rule_engine", "llm")
@@ -513,7 +513,7 @@ def test_llm_operations_outside_region_are_rejected(engine):
     it = ReviewItem(item_id="x:L1", book_id="b", chapter_id="c",
                     line_start=1, line_end=1, start=100, end=105,
                     severity=SEV_MEDIUM, context_before="", context_after="",
-                    suspicious_text="她冲到常榕。", default_text="她冲到常榕。")
+                    suspicious_text="她冲到林晚。", default_text="她冲到林晚。")
     txt, _cid, note = apply_decision(it, {
         "decision": "repair",
         "operations": [{"type": "delete", "start": 50, "end": 55}]})
@@ -527,11 +527,11 @@ def test_llm_operations_are_applied_locally(engine, monkeypatch):
     it = ReviewItem(item_id="x:L1", book_id="b", chapter_id="c",
                     line_start=1, line_end=1, start=100, end=107,
                     severity=SEV_MEDIUM, context_before="", context_after="",
-                    suspicious_text="她冲到常榕霖身前。", default_text="她冲到常榕身前。")
+                    suspicious_text="她冲到林晚霖身前。", default_text="她冲到林晚身前。")
     txt, cid, _n = apply_decision(it, {
         "decision": "repair",
         "operations": [{"type": "delete", "start": 105, "end": 106}]})
-    assert txt == "她冲到常榕身前。" and cid == "llm_ops", (txt, cid)
+    assert txt == "她冲到林晚身前。" and cid == "llm_ops", (txt, cid)
     # replace 型
     it2 = ReviewItem(item_id="x:L2", book_id="b", chapter_id="c",
                      line_start=1, line_end=1, start=0, end=8,
@@ -574,3 +574,161 @@ def test_delete_only_blocks_replace_and_insert(engine, monkeypatch):
         "decision": "repair",
         "operations": [{"type": "delete", "start": 1, "end": 3}]})
     assert txt3 == "灰的天空" and cid3 == "llm_ops", (txt3, cid3)
+
+
+def test_parse_decision_fence_with_prefix_text_and_nested_braces():
+    """前置说明文字 + ```json 围栏，或文本内嵌合法 JSON 对象都能正确提取。"""
+    d1 = parse_decision(
+        "好的，下面是我的校对判断结果：\n"
+        "```json\n"
+        '{"decision": "repair", "confidence": 0.88, "reason": "含{广告}标识", '
+        '"operations": [{"type": "delete", "start": 2, "end": 4}]}\n'
+        "```\n请核对。"
+    )
+    assert d1["decision"] == "repair"
+    assert abs(d1["confidence"] - 0.88) < 1e-9
+    assert d1["operations"][0]["start"] == 2
+
+    d2 = parse_decision('说明：{"decision": "keep", "confidence": 0.91, "reason": "正常对话"} 结束')
+    assert d2["decision"] == "keep" and abs(d2["confidence"] - 0.91) < 1e-9
+
+
+def test_op_apply_merges_overlapping_delete_ranges():
+    """重叠 delete 区间必须先合并规范化，防止倒序删除索引错位误删正常字符。"""
+    from adclean.review import _op_apply
+    out, note = _op_apply(
+        "0123456789", 0,
+        [{"type": "delete", "start": 2, "end": 5},
+         {"type": "delete", "start": 4, "end": 7}],
+        delete_only=True,
+    )
+    assert note == ""
+    assert out == "01789", out
+
+
+def test_ads_residual_prose_protection():
+    """含剧情正文或对话的句子命中 QQ群/网址/OCR/水印关键词时不得误杀整行；纯广告行照常删除。"""
+    from adclean.ads import ad_line_reason, selfcheck
+    assert selfcheck() == []
+    for prose in (
+        "他把纸条递给林雪：“这是我的QQ群：123456，明天大家都在里面讨论战术。”",
+        "警方通过OCR技术还原了当年残留的档案照片，终于锁定了嫌疑人。",
+        "苏明盯着电脑屏幕上的网址：https://example.com，久久没有说话。",
+        "“这是我的QQ群：123456。”他笑着把名片递了过去。",
+    ):
+        assert ad_line_reason(prose) is None, prose
+    for ad in (
+        "QQ群：123456789，欢迎加入书友交流群！",
+        "本文件由会员“12345”上传，资源来源于网络，仅供学习交流。",
+        "网址：www.example-novel.com 备用网址：www.example2.com",
+    ):
+        assert ad_line_reason(ad) is not None, ad
+
+
+def test_auto_fit_fallback_without_default_lm(tmp_path):
+    """无默认 .adclean-lm.json 时 build_engine 不抛 FileNotFoundError，并在 run_book 中自动内存构建 LM。"""
+    from adclean.pipeline import build_engine
+    missing = str(tmp_path / "does-not-exist-lm.json")
+    eng = build_engine(lm_path=missing, kind="locate")
+    assert eng._lm_mode == "auto_fit"
+    text = "\n".join(CLEAN * 3 + ["他抬起头\u200b看着窗外。"])
+    res = run_book(text, eng, PipelineConfig(), book_id="nof", resolver=NullResolver())
+    assert res.lm_mode == "auto_fit"
+    assert res.report["lm_mode"] == "auto_fit"
+    assert "\u200b" not in res.cleaned
+
+
+def test_pipeline_lm_mode_file_and_edit_items(mini_lm_file):
+    """使用外部 LM 文件时记录 lm_mode='file'，且 PipelineResult.edit_items 结构完整。"""
+    from adclean.pipeline import build_engine
+    eng = build_engine(lm_path=mini_lm_file, kind="locate")
+    text = "\n".join(CLEAN[:2] + ["QQ群：123456789，欢迎加入书友交流群！", "他抬起\u200b头。"] + CLEAN[2:4])
+    res = run_book(text, eng, PipelineConfig(), book_id="f", resolver=NullResolver())
+    assert res.lm_mode == "file"
+    assert isinstance(res.llm_usage, dict)
+    assert set(res.llm_usage.keys()) == {"prompt_tokens", "completion_tokens", "total_tokens"}
+    assert len(res.edit_items) >= 2
+    ad_it = [x for x in res.edit_items if x["kind"] == "ad_line"][0]
+    assert ad_it["line_no"] == 3 and ad_it["source"] == "ads" and ad_it["default_accepted"] is True
+    assert len(ad_it["context_prev"]) <= 2 and len(ad_it["context_next"]) <= 2
+
+
+def test_round2_uses_cur_coordinates_and_text():
+    """Final Audit Round 2 必须基于修改后的 cur 与 cur_offs 构造 ReviewItem。"""
+    lm = LanguageModel().fit(CLEAN * 40)
+    # 设高 min_margin 让 Stage 1 保留两处强证据，再让 Round 1（max_llm_items=1）只修 l1 缩短文本，
+    # 从而让 Round 2 复审 l2 时验证 cur_offs 与 cur[li] 坐标系完全对齐。
+    eng = V3Engine(lm, V3Config(min_margin=100.0))
+    l1 = "林晚\u200b叹了口气坐到沙发旁边。"
+    l2 = "她冲到林晚身前，张开双手\U00030C21试图护住林晚。"
+    text = "\n".join(CLEAN[:2] + [l1, l2] + CLEAN[2:])
+    seen_round2 = []
+
+    class Round2CheckResolver:
+        name = "r2-check"
+
+        def prepare(self, items, progress=None):
+            return {"total": len(items), "ok": len(items), "fail": 0, "skipped": 0, "retried": 0}
+
+        def review(self, item):
+            if "\u200b" in item.suspicious_text:
+                pos = item.suspicious_text.index("\u200b")
+                return {
+                    "decision": "repair",
+                    "confidence": 0.95,
+                    "reason": "删掉零宽字符",
+                    "operations": [{"type": "delete", "start": item.start + pos,
+                                    "end": item.start + pos + 1}],
+                }
+            if "\U00030C21" in item.suspicious_text:
+                seen_round2.append(item)
+                pos = item.suspicious_text.index("\U00030C21")
+                return {
+                    "decision": "repair",
+                    "confidence": 0.95,
+                    "reason": "删掉非BMP字符",
+                    "operations": [{"type": "delete", "start": item.start + pos,
+                                    "end": item.start + pos + 1}],
+                }
+            return {"decision": "keep", "confidence": 0.9, "reason": "ok"}
+
+    cfg = PipelineConfig(llm_max_priority=3, max_llm_items=1, final_review_rounds=1)
+    cfg.audit = AuditConfig(merge_lines=False)
+    res = run_book(text, eng, cfg, book_id="r2", resolver=Round2CheckResolver())
+    assert seen_round2, "Round 2 必须触发"
+    it2 = seen_round2[0]
+    assert "\U00030C21" not in res.cleaned
+    cur_before_l2 = res.cleaned.split("\n")[: it2.line_start - 1]
+    expected_off = sum(len(x) + 1 for x in cur_before_l2)
+    assert it2.start == expected_off
+    assert it2.end == expected_off + len(l2)
+
+
+def test_pipeline_cancel_check_raises_job_cancelled(engine):
+    """cancel_check 触发时必须立即抛出 JobCancelledError。"""
+    from adclean.pipeline import JobCancelledError
+    text = "\n".join(CLEAN + [POLLUTED])
+    cfg = PipelineConfig(cancel_check=lambda: True)
+    with pytest.raises(JobCancelledError):
+        run_book(text, engine, cfg, book_id="cancel_test", resolver=NullResolver())
+
+
+def test_audit_cross_line_merge_does_not_swallow_prose(engine):
+    """相邻行各有一个局部异常但中间夹着长段正常正文时，不得跨行合并吞并正文。"""
+    l1 = "\u200b" + CLEAN[0]
+    l2 = CLEAN[1] + "\u200b"
+    layer = AuditLayer(engine, AuditConfig(merge_lines=True, merge_gap=8, max_event_chars=200))
+    evs = layer.scan_book(l1 + "\n" + l2, "b")
+    assert len(evs) == 2
+    assert all(e.line_start == e.line_end for e in evs)
+
+
+def test_statistical_conf_shared_with_v3_suspicion(engine):
+    """audit.statistical_conf 与 V3Engine.suspicion 共用同一套打分公式。"""
+    from adclean.audit import statistical_conf
+    chars = list(POLLUTED)
+    mask = engine._protect_mask(chars)
+    for i in range(len(chars)):
+        assert statistical_conf(engine.lm, chars, mask, i, kana_safe=engine.cfg.kana_safe) \
+            == engine.suspicion(chars, mask, i)
+

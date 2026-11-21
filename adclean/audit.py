@@ -10,67 +10,9 @@ import unicodedata
 from dataclasses import dataclass, field
 
 from . import charclass as cc
-from .v2engine import HOMO_ALL, _is_cjk_symbol, _is_kana
+from .patterns import (BOS, EOS, HOMO_ALL, STRONG_PAIR, JobCancelledError,
+                       _is_cjk_symbol, _is_kana, statistical_conf)
 from .v3engine import V3Engine
-
-STRONG_PAIR = 10
-BOS = "\u0001"
-EOS = "\u0002"
-
-
-def statistical_conf(lm, chars: list, mask: list, i: int,
-                     kana_safe: bool = True, win: int = 15) -> float:
-    """位置 i 的统计异常置信度；只用于 Audit 出证据，不参与删除决策。"""
-    n = len(chars)
-    ch = chars[i]
-    if mask[i] or ch in "\r\n\t" or cc.is_space(ch):
-        return 0.0
-    cat = unicodedata.category(ch)
-    if cc.is_invisible(ch) or cat in ("Cf", "Cc", "Co", "Cs", "Cn"):
-        return 10.0
-    if kana_safe and _is_kana(ch):
-        return 0.0
-    L = chars[i - 1] if i else BOS
-    R = chars[i + 1] if i + 1 < n else EOS
-    if cc.is_space(L):
-        L = BOS
-    if cc.is_space(R):
-        R = EOS
-
-    def homo_density() -> int:
-        lo, hi = max(0, i - win), min(n, i + win + 1)
-        return sum(1 for j in range(lo, hi) if chars[j] in HOMO_ALL)
-
-    s = 0.0
-    if cc.is_cjk(ch):
-        f = lm.uni.get(ch, 0)
-        if f == 0:
-            s += 3.0
-        elif f <= 8:
-            s += 2.0
-        elif f <= 60:
-            s += 0.8
-        elif f <= 400:
-            s += 0.3
-        lpr = lm.bi.get(L + ch, 0)
-        rpr = lm.bi.get(ch + R, 0)
-        m = max(lpr, rpr)
-        if m <= 1:
-            s += 1.5
-        elif m < STRONG_PAIR:
-            s += 0.6
-        if ch in HOMO_ALL:
-            s += 0.4 * min(homo_density() / 4.0, 2.0)
-        if cc.in_suspect_block(ch):
-            s += 1.0
-    elif ch.isascii() and ch.isalnum():
-        f = lm.uni.get(ch, 0)
-        if f <= 400 and (lm.bi.get(L + ch, 0) <= 1 or lm.bi.get(ch + R, 0) <= 1):
-            s += 1.2 + 0.4 * min(homo_density() / 4.0, 2.0)
-    else:
-        if _is_cjk_symbol(ch):
-            s += 0.6
-    return s
 
 # 证据类型
 EV_INVISIBLE = "invisible_char"
@@ -363,7 +305,8 @@ class AuditLayer:
     # 全书扫描
     # ------------------------------------------------------------------
     def scan_book(self, text: str, book_id: str = "", progress=None,
-                  proposals: dict | None = None) -> list:
+                  proposals: dict | None = None,
+                  cancel_check=None) -> list:
         """扫描整本书。progress 可选：callable(done_lines, total_lines)。
 
         proposals：V3 主引擎已算好的逐行决策 {line_idx: (frozenset(位置), margin)}，
@@ -394,6 +337,8 @@ class AuditLayer:
         n_lines = len(lines)
         step = max(1, n_lines // 100)      # 约 100 次回调
         for i, ln in enumerate(lines):
+            if cancel_check is not None and (i % 256 == 0) and cancel_check():
+                raise JobCancelledError("任务已取消")
             prop = self.proposals.get(i)
             if prop is None and not reuse and cfg.engine_scan and ln:
                 r = self.engine.clean_line(ln)
@@ -436,6 +381,10 @@ class AuditLayer:
                    and raw[j + 1][0] == raw[j][0] + 1
                    and L < cfg.max_event_lines):
                 nxt = raw[j + 1]
+                # 两行区域间夹杂的正常文本过长时禁止跨行合并，避免吞并大段正常正文
+                gap_between = (len(lines[raw[j][0]]) - raw[j][2]) + nxt[1]
+                if gap_between > cfg.merge_gap:
+                    break
                 new_hi_off = (offs[nxt[0]] + nxt[2]) - (offs[i] + lo)
                 if new_hi_off > cfg.max_event_chars:
                     break

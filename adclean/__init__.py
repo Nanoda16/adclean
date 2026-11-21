@@ -37,6 +37,7 @@ from .review import (  # noqa: F401
     parse_decision,
 )
 from .pipeline import (  # noqa: F401
+    JobCancelledError,
     PipelineConfig,
     PipelineResult,
     run_book,
@@ -55,7 +56,7 @@ __all__ = [
     "CallableResolver", "build_prompt", "parse_decision", "apply_decision",
     "DECISION_REPAIR", "DECISION_KEEP", "DECISION_UNCERTAIN",
     # Pipeline
-    "PipelineConfig", "PipelineResult", "run_book", "run_files",
+    "JobCancelledError", "PipelineConfig", "PipelineResult", "run_book", "run_files",
 ]
 
 __version__ = "1.1.0"
